@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-24",
+  "scope": "M0 capability probes and M1 native foundation; not DSH embedding acceptance",
+  "source": {
+    "pluginBaseCommit": "e7eec2be630249d8d56c44df9423c4f39e00262d",
+    "pluginChanges": "uncommitted",
+    "dshCommit": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
+    "dshVersion": "0.2.1-rc.3",
+    "electron": "44.7.0",
+    "chrome": "152.0.7977.130"
+  },
+  "toolchain": {
+    "platform": "win32-x64",
+    "cmake": "4.1.5",
+    "msvc": "19.42.34444.0",
+    "windowsSDK": "10.0.26100.0",
+    "vulkanSDK": "1.4.341.1",
+    "shaderc": "v2026.1",
+    "node": "25.6.1"
+  },
+  "commands": [
+    "pnpm run graphics101:build",
+    "pnpm run graphics101:verify",
+    "ctest --test-dir native/graphics101/build -C Release --output-on-failure",
+    "pnpm run graphics101:run",
+    "pnpm run check"
+  ],
+  "native": {
+    "renderGPU": "NVIDIA GeForce RTX 2060 SUPER",
+    "frames": 180,
+    "validationErrors": 0,
+    "runtimeCpuReadbacks": 0,
+    "sharedOutput": false,
+    "automatedCoverage": ["camera matrix changes", "orbit", "dolly", "W movement", "focus lost", "pointer cancel", "reset", "100 resize requests", "minimize and restore"],
+    "visualPixelAcceptance": "not-tested",
+    "createDestroy100": "not-tested",
+    "tenMinuteStress": "not-tested"
+  },
+  "interop": {
+    "testedGPUs": ["NVIDIA GeForce RTX 2060 SUPER", "Intel(R) UHD Graphics 630"],
+    "dxgiLuidMatched": true,
+    "d3d11NtHandleCreated": true,
+    "rgba8D3d11TextureImportAndBind": "VK_SUCCESS on both GPUs for transfer-dst and transfer-dst plus color-attachment usage",
+    "dedicatedAllocationRequired": true,
+    "bgra8": "capability query only; import not attempted",
+    "chromiumLuid": "not available in observed GPU report; multi-GPU matching not established",
+    "externalOwnershipAndWrite": "not-tested",
+    "electron1500FrameDisplay": "not-tested"
+  },
+  "sandbox": {
+    "configuration": { "sandbox": true, "contextIsolation": true, "nodeIntegration": false },
+    "fixture": "isolated capability fixture using installed DSH Electron; actual DSH preload not modified or exercised",
+    "importSharedTexture": "function",
+    "finishTransferSharedTexture": "function",
+    "setSharedTextureReceiver": "function",
+    "startTransferSharedTexture": "undefined in sharedTexture.subtle",
+    "transferSharedTexture": "undefined on sharedTexture",
+    "videoFrameCallbackAcrossContextBridge": "passed with synthetic 2x2 frame",
+    "videoFrameAfterPreloadClose": "displayWidth becomes 0; retaining callback frame is not safe",
+    "gpuProcessExits": 0,
+    "realTextureTransferLifecycle": "not-tested"
+  },
+  "gates": { "M0-A": "not-passed", "M0-B": "not-passed", "M1": "partial", "M2": "not-started" },
+  "conclusion": "Native 3D integration remains plausible, not proven. Successful import/bind and sandbox API visibility remove two preliminary unknowns, not GPU synchronization, transfer or DSH lifecycle risks.",
+  "nextEvidenceRequired": [
+    "Resolve Electron 44.7.0 transfer API on imported object instead of assuming reference API shape",
+    "Validate actual DSH sandboxed preload and trusted top-frame restrictions",
+    "Render to imported external VkImage with correct external ownership and fence",
+    "Transfer texture to WebGPU canvas and verify 1500 frames without readback, GPU exit, validation error or lease timeout"
+  ],
+  "fullLocalResults": ".graphics101-results/manifest.json"
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Godot integration",
+    "description": "Loads the Godot integration bootstrap; no runtime or editor is embedded yet."
+  }
+}

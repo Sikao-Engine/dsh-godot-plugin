@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:"><title>Graphics101 · Electron 原生 3D 实验</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div><strong>GRAPHICS <span>101</span></strong><small>Electron / Native GPU Lab</small></div><span id="status" class="badge">初始化</span></header>
+<main>
+<aside><h2>原生 3D 视口</h2><p>C++20 + Vulkan 在独立 worker 中渲染。Electron 负责网页 UI，WebGPU 仅呈现原生共享纹理。</p><h3>场景控制</h3><button id="reset">重置相机 · R</button><label><input type="checkbox" id="rotate" checked> 三角形自动旋转 · Space</label><label><input type="checkbox" id="pause"> 暂停发布</label><button id="fullscreen">全屏视口</button><h3>输入</h3><dl><dt>拖动</dt><dd>Orbit</dd><dt>滚轮</dt><dd>Dolly</dd><dt>W A S D</dt><dd>平移</dd><dt>Q / E</dt><dd>升降</dd></dl><p class="note">键盘仅在视口聚焦时生效。右侧文本框不会触发相机。</p><h3>Web UI 输入测试</h3><textarea placeholder="在这里输入；WASD 不应移动相机"></textarea></aside>
+<section class="workspace"><div class="toolbar"><span>Perspective / RGB triangle</span><span id="size">等待 surface</span></div><div id="viewport-wrap"><canvas id="viewport" tabindex="0" aria-label="原生 3D 视口"></canvas><div id="overlay">正在连接原生 Vulkan worker…</div><div class="hud">原生 Vulkan → 共享 GPU 纹理 → DOM canvas</div></div><footer><span id="frames">0 帧</span><span id="timing">input-to-submit —</span><span>无 CPU 像素传输</span></footer></section>
+<aside class="diagnostics"><h2>实验诊断</h2><h3>后端</h3><p id="backend">Vulkan（无静默回退）</p><h3>适配器</h3><p id="gpu">检测中</p><h3>安全配置</h3><p>sandbox: true<br>contextIsolation: true<br>nodeIntegration: false</p><h3>租约</h3><p id="leases">4 槽 · 最多 2 帧在途 + 1 排队</p><h3>状态日志</h3><pre id="log"></pre><p class="note">独立验证 sample，不是 DSH 插件，也不表示 Godot 已接入。</p></aside>
+</main><script src="renderer.js"></script>
+</body></html>

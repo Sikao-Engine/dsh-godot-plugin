@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-24",
+  "scope": "Independent Electron sample, not DSH embedding",
+  "electron": "44.7.0",
+  "gpu": "NVIDIA GeForce RTX 2060 SUPER",
+  "driverVersion": "32.0.16.1714",
+  "configuration": { "sandbox": true, "contextIsolation": true, "nodeIntegration": false },
+  "command": "pnpm run graphics101:electron:smoke",
+  "path": "D3D11 RGBA8 NT texture allocation -> Vulkan dedicated import and direct color attachment -> external ownership release and CPU fence wait -> Electron imported.startTransferSharedTexture -> sandbox preload finishTransferSharedTexture/getVideoFrame -> WebGPU importExternalTexture -> DOM canvas",
+  "result": {
+    "frames": 1500,
+    "resizeRequests": 100,
+    "epochs": 102,
+    "rgbPixels": 29971,
+    "dominantPixels": [10065, 8926, 10019],
+    "inputApplied": true,
+    "delivered": 1501,
+    "released": 1501,
+    "validationErrors": 0,
+    "gpuProcessExits": 0,
+    "leaseTimeouts": 0,
+    "runtimeCpuReadbacks": 0,
+    "exportGpuCopies": 0,
+    "diagnosticReadbacks": 1,
+    "workerExitCode": 0,
+    "sampleExitCode": 0
+  },
+  "copyAccounting": "No native export copy: render directly to imported image. WebGPU still executes fullscreen sampling/render pass. One final GPU-to-CPU canvas readback exists only in smoke diagnostics.",
+  "gates": { "M0-A": "passed on recorded GPU/driver/RGBA8", "M0-B": "independent sandbox transfer passed; real DSH preload still pending", "M1": "shared-output foundation passed; full stress matrix pending", "M2": "not-started" },
+  "knownLimits": [
+    "Chromium LUID not exposed; vendor/device IDs checked, identical multi-GPU configurations unverified",
+    "Native worker has PROCESS_DUP_HANDLE access to fixed trusted broker process; not native sandbox",
+    "Control and frame metadata use stdio pipes; pixel data never enters pipes",
+    "Resize drains old ring before rebuilding; viewport quota 2048x2048 and four slots",
+    "100 create/destroy, ten-minute stress, handle-growth and crash/lost-device tests pending",
+    "No actual DSH/Godot modifications or installer acceptance"
+  ]
+}

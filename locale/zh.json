@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Godot 集成",
+    "description": "加载 Godot 集成开发骨架；尚未嵌入运行时或编辑器。"
+  }
+}

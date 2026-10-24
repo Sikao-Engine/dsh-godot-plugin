@@ -2,6 +2,8 @@
 
 日期：2026-10-24。参考源码：`F:\repos\ai\deepseek-harness`，DSH `0.2.1-rc.3`、Cordis `4.0.5`。本报告的命令适用于 Windows CMD。
 
+> 2026-10-25 更新：插件已进入 Godot worker 阶段（输出层重构完成，协议 2 全链路通过）。当前有效的构建/打包/发布验收步骤以 `doc/acceptance/build-and-package.zh.md` 为准；本文档保留插件管理器与 DSH 环境的基础说明，其中 graphics101 相关命令现以 `pnpm run graphics101:*` 前缀运行。
+
 ## 1. 需求与第一步边界
 
 目标不是给聊天界面加一个 Godot 链接，而是独立开发 `dsh-godot-plugin`，未来让 DSH 承载 Godot 项目编辑、实时预览和应用分发。

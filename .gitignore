@@ -9,3 +9,7 @@ native/graphics101/build/
 native/win32-x64/
 dist/
 runtime-manifest.json
+runtime-manifest.editor.json
+native/editor-project/.godot/
+
+.kimix_cache

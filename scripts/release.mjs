@@ -1,10 +1,10 @@
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
-const source = resolve(process.env.DSH_SOURCE_DIR ?? resolve(root, '../../ai/deepseek-harness'))
+const source = resolve(process.env.DSH_SOURCE_DIR ?? [resolve(root, '../deepseek-harness-3d'), resolve(root, '../../ai/deepseek-harness')].find(candidate => existsSync(join(candidate, 'package.json'))) ?? resolve(root, '../deepseek-harness-3d'))
 const files = ['graphics101.exe', 'shaders/triangle.vert.spv', 'shaders/triangle.frag.spv']
 const hashes = {}
 for (const file of files) {

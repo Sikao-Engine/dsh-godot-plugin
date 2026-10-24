@@ -10,9 +10,14 @@
 - [x] 安装到隔离 Web profile，验证真实服务和认证 HTML。
 - [x] DSH 源码构建与开发 Electron 启动验证。
 - [x] 提供源码开发入门与模型/第三方认证排查文档。
-- [ ] 完成 Electron 窗口中本地 Godot 插件骨架加载人工验收。
+- [x] 完成 Electron 窗口中本地 Godot 插件骨架加载人工验收。
+- [x] M0-A/M0-B/M1（graphics101 探针与内嵌，详见 getting-started 第 10 节）。
+- [x] M2（DSH 通用 Native Viewport seam，协议 2）。
+- [x] M3（可安装发行插件，tarball + manifest，本目录 `../acceptance/build-and-package.zh.md`）。
+- [x] M4 主体（输出层重构 + Godot worker：Vulkan 直写 D3D11 共享纹理、真实渲染场景、通用输入、租约、60fps 假 broker 验收 `godot:verify` 全绿）；M4 剩余：桌面端到端 Electron 组合验收、运行用户工程场景。
+- [ ] M5-A/M5-B（Godot 编辑工作台 / 完整编辑器嵌入）。
 
-## 实施里程碑（设计完成，代码尚未实现）
+实施里程碑（原始计划）
 
 | 阶段 | 交付 | 关键门禁 |
 | --- | --- | --- |
@@ -29,4 +34,4 @@
 
 Vulkan 探针建议时间盒 3～5 个有效开发日；失败保留证据，首个发行 demo 显式选 DirectX，继续独立验证 Vulkan，不降低显示路径要求。
 
-下一步实际开发限定 M0 与 M1，不先改 Godot。阶段验收标准、目录草案、发行与移动端边界均在总设计中。
+下一步：M4 收尾（桌面 Electron 端到端验收记录、worker 运行用户工程场景），再评估 M5-A。

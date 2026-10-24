@@ -8,13 +8,13 @@
 
 | 能力 | 当前状态 | 实现位置 |
 |---|---|---|
-| Cordis 插件与右侧视口 | 已实现注册、挂载和卸载路径 | `src/index.ts`、`src/client.js` |
-| 原生渲染 | Graphics101 Vulkan renderer，不是 Godot | `native/graphics101/src/vulkan_renderer.cpp` |
-| GPU 输出 | Vulkan 与 D3D11 共享纹理，NT 句柄复制到 broker | `native/graphics101/src/shared_surface_win32.cpp` |
+| Cordis 插件与右侧视口 | 已实现注册、挂载和卸载路径 | src/index.ts、src/client.js |
+| 原生渲染 | Godot worker（fork 4.8.beta）：演示场景；graphics101 保留为开发样例 | godot/（platform/windows/dsh_*） |
+| GPU 输出 | Vulkan 与 D3D11 共享纹理，NT 句柄复制到 broker | godot/platform/windows/dsh_shared_frames_win32.cpp |
 | Desktop 导入 | Electron sharedTexture → VideoFrame → 客户端 WebGPU | 上游 Desktop broker 与 preload |
-| 通用交互 | 指针、滚轮、DOM code 键盘、焦点、resize 与 visibility | 上游协议 2，下游 worker 适配 |
-| 引擎操作 | `graphics101.camera.v1` 下的 reset 与 rotate | 下游相机适配器 |
-| Godot runtime | 尚未接入 | 无 |
+| 通用交互 | 指针、滚轮、DOM code 键盘、焦点、resize 与 visibility | 上游协议 2；godot/platform/windows/dsh_viewport_worker.cpp 输入映射 |
+| 引擎操作 | graphics101.camera.v1 已退役；godot.demo.v1 提供 reset 与 rotate | 下游 demo 控制器 |
+| Godot runtime | 已接入（worker 模式，协议 2 全链路 `pnpm run godot:verify` 通过） | godot/ 输出层重构，见 godot-worker-output.zh.md |
 
 现状由源码和本次实际执行的检查确定；已有旧报告中的 GPU 验证不能自动成为新协议的验证证据。完整 Desktop 组合、重启、GPU 丢失和插件热卸载仍需独立验收。
 
@@ -38,7 +38,7 @@
 
 ## 替换 Godot runtime
 
-保持上游 API 不变，下游替换 executable 和 producer ID，更新 manifest 摘要及声明的扩展。Godot 适配器负责将通用事件映射为 Godot InputEvent，处理 focus、surface 尺寸与 CSS/物理像素转换，完成 GPU 导出和 lease 同步。
+保持上游 API 不变，下游替换 executable 和 producer ID，更新 manifest 摘要及声明的扩展。该替换已按 worker 模式实现（见 godot-worker-output.zh.md）：producer `dsh-godot-plugin/godot`、扩展 `godot.demo.v1`、协议 2 全链路验收 `pnpm run godot:verify`。Godot 适配器负责将通用事件映射为 Godot InputEvent，处理 focus、surface 尺寸与 CSS/物理像素转换，完成 GPU 导出和 lease 同步。
 
 场景树、节点选择、变换、资源打开、undo/redo、编辑模式与运行模式保留在下游 `godot.editor.v1` 等独立协议中。需要 RPC 的操作在 payload 内规定 requestId、result、error、取消与幂等语义，不能把 frame.inputSeq 当成调用完成。尚未有 Godot 实现，不提前冻结场景 schema。
 

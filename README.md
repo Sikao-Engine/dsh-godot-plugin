@@ -1,56 +1,49 @@
 # dsh-godot-plugin
 
-DeepSeek Harness 3D fork 的独立 Godot 集成插件。目前通过 Graphics101 提供原生 Vulkan 视口，消费通用输入与命名扩展协议 2；不包含 Godot runtime 或编辑器。职责划分、当前进度与替换 runtime 的 API 见[第一版接口设计](doc/design/native-viewport-api-v1.zh.md)。
+DeepSeek Harness 3D fork 的 Godot 集成插件。输出层重构后的 fork 引擎以原生 worker 形态提供 Godot 3D 视口：Vulkan 直写 D3D11 共享纹理（零拷贝、无回读），经线协议 2 与 DSH Desktop broker 交换帧与通用输入；消费通用输入与命名扩展协议 2。职责划分见 `doc/design/godot-worker-output.zh.md`，第一版接口设计见 `doc/design/native-viewport-api-v1.zh.md`。
 
-## 快速开始
+## 构建方法（三步）
 
-在当前目录执行（Windows CMD）：
-
-```bat
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" install
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" run check
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" run dsh:doctor
-```
-
-PATH 中 pnpm 与源码要求一致时，可改用 `pnpm`。源码要求 `pnpm@11.28.5`；本机 PATH 当前为 `12.5.1`，所以以上命令使用源码自带的固定版本。
-
-### 原生视口最简构建与启动
-
-完全退出已有 Desktop 后，在 `F:\repos\myrepo\dsh-godot-plugin` 执行以下 Windows CMD 命令。前提是两仓依赖已安装，且本机具备 Visual Studio 2022 C++ Build Tools、Windows SDK 与 Vulkan SDK（含 glslc）；首次 CMake 配置需要下载 nlohmann/json。
+前置：Node ≥ 24.9、pnpm 11.28.5、Python 3 + SCons、VS 2022+ Build Tools + Windows SDK、Vulkan 驱动。开发机一键检查：`pnpm run godot:doctor`。
 
 ```bat
-set "DSH_BUILD_NATIVE_VIEWPORT=1"
-set "DSH_DESKTOP_NATIVE_VIEWPORT=1"
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" run release:stage
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" run dsh:build
-node "F:\repos\ai\deepseek-harness\node_modules\pnpm\bin\pnpm.mjs" run dsh:desktop
-```
-
-仅需两个启用参数：`DSH_BUILD_NATIVE_VIEWPORT=1` 在构建时包含 broker 与 preload；`DSH_DESKTOP_NATIVE_VIEWPORT=1` 在启动时授权原生 worker。两者不能互相替代，默认均关闭。当前限定 Windows x64 / Electron 44.7.0；通用 API 使用线协议 2，旧协议 1 插件不能混用。`dsh:desktop` 会清除继承的 `ELECTRON_RUN_AS_NODE`，避免 Electron 被误启动为 Node 模式。
-
-`release:stage` 编译原生 worker 和插件客户端，将 exe 与 shader 放入 `native/win32-x64`，并更新 `runtime-manifest.json` 中的 SHA-256；不能只运行 `graphics101:build` 后就启动，否则 Desktop 使用的已暂存 exe 与摘要不会更新。`dsh:build` 构建上游产物并执行构建检查，不打安装包。首次或上游代码变更时运行完整流程；仅修改插件时可省略 `dsh:build`，但上游现有产物必须已开启原生视口。仅重启且两仓产物未变时，只需设置启动参数并运行 `dsh:desktop`。
-
-这些脚本统一设置开发 `DSH_HOME` 为当前目录的 `.dsh-dev/home`，Electron 浏览器数据为 `.dsh-dev/electron-user-data`。Web 与 Desktop 的插件选择仍相互独立。启动 Desktop 后，在“插件”页安装 `link:F:/repos/myrepo/dsh-godot-plugin`，按插件管理器提示重启。不能用普通源码 CLI 管理保留的 desktop profile。协议发现应报告 `protocol: 2`；右侧 Graphics101 视口持续产帧表示基本呈现路径可用，不代表 Godot runtime 已接入或完整故障恢复已验收。
-
-Web 调试不提供原生视口，使用以下独立流程：
-
-```bat
+:: 1. scons 构建 fork 引擎（dsh_viewport=yes 输出层）
+pnpm run godot:build
+:: 2. 后处理脚本：暂存 worker + 生成 runtime-manifest.json（SHA-256/工具链/协议）
+pnpm run godot:stage
+:: 3. dsh 直接从仓库根目录安装（web 开发链路 link 安装；桌面走应用内插件页）
 pnpm run dsh:install:web
-pnpm run dsh:web
 ```
 
-详细构建、第三方插件、桌面加载与未来原生嵌入边界见 [入门报告](doc/getting-started.zh.md)。
+随后 `pnpm run godot:verify`（进程内假 broker 协议验收）与 `pnpm run check`（typecheck+构建+测试）应全绿；桌面端到端启动与授权见 `doc/acceptance/build-and-package.zh.md` 第 1 节。
 
-后续 GPU 视口与 Godot 接入采用 PC 优先、Vulkan 首选、DirectX 兜底里程碑；完整阶段、DSH Electron 最小接口及上游 PR 设计见 [开发总计划](doc/design/development-plan.zh.md) 和 [路线图](doc/roadmap.md)。
+## 打包导出
+
+```bat
+pnpm run release:pack       :: dist\dsh-godot-plugin-0.2.0.tgz（npm tarball，含 60 MiB worker）
+node scripts\publish.mjs github   :: gh release create v0.2.0（需干净树 + tag）
+node scripts\publish.mjs npm      :: 清洁 staging 后 npm publish（可 --tag beta）
+```
+
+下游安装：`dsh plugins install <tgz|dsh-godot-plugin@version|github:owner/repo@tag>`。详见 `doc/acceptance/build-and-package.zh.md` 第 2 节。
+
+## 当前能力
+
+- producer `dsh-godot-plugin/godot`，扩展 `godot.demo.v1`（reset/rotate）；内置旋转立方体演示场景（拖拽环绕、滚轮/WASD/QE、R 重置、Space 旋转）。
+- **editor 模式**（构建验证通过）：`godot:build:editor` → `godot:stage:editor` 产出 `dsh-godot-editor.exe`，以 `-e --path <工程>` 作为 producer args 运行完整 Godot editor；`godot:verify:editor` 假 broker 7 步全绿。两个 producer 同时注册，面板「模式」下拉随时切换运行时/编辑器（切换自动重挂载视口）。文本输入/IME、剪贴板、relative mouse mode 为显式延后项（见验收文档 1.6）。
+- Windows x64 / Electron 44.7.0 / D3D11 NT RGBA8 传输；2048×2048 配额、4 帧槽租约。
+- 图形学 101（graphics101）保留为 `native/graphics101` 开发验证样例（`pnpm run graphics101:*`），不再随插件发布。
 
 ## 文件
 
-- `src/index.ts`：Cordis 服务 `ctx.godotIntegration`，`status()` 明确报告尚未嵌入 runtime。
-- `cordis.patch.yml`：可被插件管理器发现的 bundle 配置。
-- `scripts/dsh-dev.mjs`：源码路径、隔离 home、构建与启动入口。
-- `tests/plugin.test.mjs`：清单、挂载、卸载、重新挂载验证。
-- `locale/`：插件页中英文元信息。
+- `godot/`：fork 子模块（分支 `dsh_godot_plugin`），输出层重构 + worker。
+- `scripts/godot.mjs`：build/stage/verify/doctor 工具链入口。
+- `scripts/publish.mjs`：pack / GitHub Release / npm 发布。
+- `src/index.ts`：Cordis 服务 `ctx.godotIntegration`，注册原生 producer。
+- `src/client.js`：右侧「Godot 视口」面板（attach/输入/WebGPU 呈现）。
+- `tests/plugin.test.mjs`：清单、挂载/卸载、runtime-manifest 契约。
+- `doc/`：设计、验收与路线图。
 
-`pnpm run dev` 只监听并编译本插件。修改后重启 DSH Host；默认 HMR 只保证配置重载，不承诺任意源码热更新。
+## 限制
 
-本仓库暂为 `private: true`。发布前须移除开发链接依赖、确认兼容版本和打包内容；本阶段不发布 npm 包。
+worker 模式不运行用户工程场景（后续里程碑）；多 GPU 适配器一致性同 graphics101 已知限制；`license: UNLICENSED` 对外发布前需改。`pnpm run dev` 只监听编译插件 JS；引擎改动需重跑 `godot:build` + `godot:stage`。

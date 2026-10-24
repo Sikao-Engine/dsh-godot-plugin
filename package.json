@@ -1,8 +1,8 @@
 {
   "name": "dsh-godot-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
-  "description": "Installable Graphics101 native Vulkan 3D demo for the DSH native viewport preview fork; no Godot runtime.",
+  "description": "Installable native Godot 3D viewport for the DSH native viewport preview fork: forked Godot engine worker (Vulkan -> D3D11 shared textures, wire protocol 2).",
   "license": "UNLICENSED",
   "type": "module",
   "main": "lib/index.js",
@@ -21,7 +21,8 @@
     "lib",
     "cordis.patch.yml",
     "locale",
-    "native/win32-x64",
+    "native/win32-x64/dsh-godot-worker.exe",
+    "native/editor-project",
     "runtime-manifest.json"
   ],
   "engines": {
@@ -33,7 +34,7 @@
     "@deepseek-ai/cordis": "~4.0.5"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "link:../../ai/deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis": "link:../deepseek-harness-3d/vendor/cordis",
     "@types/node": "22.20.1",
     "esbuild": "0.28.2",
     "typescript": "6.0.3"
@@ -52,8 +53,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "release:stage": "pnpm run graphics101:build && pnpm run build && node scripts/release.mjs",
-    "release:pack": "pnpm run release:stage && pnpm pack --out dist/dsh-godot-plugin-0.1.0.tgz",
+    "release:stage": "pnpm run build && node scripts/godot.mjs stage",
+    "release:pack": "pnpm run release:stage && node scripts/publish.mjs pack",
+    "release:publish": "node scripts/publish.mjs all",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "node --test tests/*.test.mjs",
@@ -63,7 +65,15 @@
     "graphics101:verify": "node scripts/graphics101.mjs verify",
     "graphics101:electron": "node scripts/graphics101.mjs electron",
     "graphics101:electron:smoke": "node scripts/graphics101.mjs electron-smoke",
+    "graphics101:stage": "pnpm run graphics101:build && pnpm run build && node scripts/release.mjs",
     "check": "pnpm run typecheck && pnpm run build && pnpm test",
+    "godot:doctor": "node scripts/godot.mjs doctor",
+    "godot:build": "node scripts/godot.mjs build",
+    "godot:build:editor": "node scripts/godot.mjs build --editor",
+    "godot:stage": "node scripts/godot.mjs stage",
+    "godot:stage:editor": "node scripts/godot.mjs stage --editor",
+    "godot:verify": "node scripts/godot.mjs verify",
+    "godot:verify:editor": "node scripts/godot.mjs verify --editor",
     "dsh:doctor": "node scripts/dsh-dev.mjs doctor",
     "dsh:build": "node scripts/dsh-dev.mjs build",
     "dsh:web": "node scripts/dsh-dev.mjs web",

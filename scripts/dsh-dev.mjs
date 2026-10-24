@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const source = resolve(process.env.DSH_SOURCE_DIR ?? resolve(root, '../../ai/deepseek-harness'))
+const source = resolve(process.env.DSH_SOURCE_DIR ?? [resolve(root, '../deepseek-harness-3d'), resolve(root, '../../ai/deepseek-harness')].find(candidate => existsSync(join(candidate, 'package.json'))) ?? resolve(root, '../deepseek-harness-3d'))
 const home = join(root, '.dsh-dev', 'home')
 const userData = join(root, '.dsh-dev', 'electron-user-data')
 const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const source = resolve(process.env.DSH_SOURCE_DIR ?? resolve(root, '../../ai/deepseek-harness'))
+const source = resolve(process.env.DSH_SOURCE_DIR ?? [resolve(root, '../deepseek-harness-3d'), resolve(root, '../../ai/deepseek-harness')].find(candidate => existsSync(join(candidate, 'package.json'))) ?? resolve(root, '../deepseek-harness-3d'))
 const build = join(root, 'native/graphics101/build')
 const results = join(root, '.graphics101-results')
 const action = process.argv[2]

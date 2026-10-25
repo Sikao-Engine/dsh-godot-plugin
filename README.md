@@ -11,8 +11,6 @@ DeepSeek Harness 3D fork 的 Godot 集成插件。输出层重构后的 fork 引
 pnpm run godot:build
 :: 2. 后处理脚本：暂存 worker + 生成 runtime-manifest.json（SHA-256/工具链/协议）
 pnpm run godot:stage
-:: 3. dsh 直接从仓库根目录安装（web 开发链路 link 安装；桌面走应用内插件页）
-pnpm run dsh:install:web
 ```
 
 随后 `pnpm run godot:verify`（进程内假 broker 协议验收）与 `pnpm run check`（typecheck+构建+测试）应全绿；桌面端到端启动与授权见 `doc/acceptance/build-and-package.zh.md` 第 1 节。

@@ -134,11 +134,22 @@ function mountViewport(api, canvas, wrap, signal, status, producerId, onCapabili
   let imeElement = null, imeActive = false, composing = false, compositionCancelled = false
   let focusedWindow = 0
   const layers = new Map() // Protocol v2.1: window id -> sub-window layer state.
+  const unknownWindowFrames = new Map() // Debug: window id -> dropped frame count.
   let layerStates = new Map() // Pure reducer state feeding the layer manager.
   let gameSession = null // Protocol v2.1: game overlay session spawned through godot.editor.v1.
   let gameTeardown = Promise.resolve()
   let dropEnabled = initialDropPreference !== false // 默认开:文件拖入视口 = 导入 Godot
   const listeners = []
+  // ---- debug instrumentation (black-screen investigation) ----
+  // console.log reaches the terminal/desktop log via ELECTRON_ENABLE_LOGGING=1;
+  // the ring buffer survives for later retrieval via globalThis.__GODOT_WIN_LOG.
+  const debugLog = globalThis.__GODOT_WIN_LOG ??= []
+  const dlog = (...args) => {
+    const line = `${new Date().toISOString().slice(11, 23)} ${args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')}`
+    debugLog.push(line)
+    if (debugLog.length > 800) debugLog.shift()
+    console.log('[godot-win]', line)
+  }
   const on = (target, event, callback, options) => { target.addEventListener(event, callback, options); listeners.push(() => target.removeEventListener(event, callback, options)) }
   const control = data => { if (generation) api.control(generation, data) }
   const input = event => control({ kind: 'input', seq: ++seq, event })
@@ -150,6 +161,7 @@ function mountViewport(api, canvas, wrap, signal, status, producerId, onCapabili
   const focusLost = (window = 0) => input(withWindow({ type: 'focus', focused: false }, window))
   const visible = value => {
     shown = value
+    dlog('visible', { value, producerId })
     control({ kind: 'visible', value })
     if (gameSession?.generation) api.control(gameSession.generation, { kind: 'visible', value })
     if (!value) focusLost(focusedWindow)
@@ -159,6 +171,7 @@ function mountViewport(api, canvas, wrap, signal, status, producerId, onCapabili
   // coalesces into one engine resize per pause instead of a resize storm.
   const resizeScheduler = createResizeScheduler({
     send: geom => {
+      dlog('resize send', { width: geom.width, height: geom.height, scale: geom.scale, cssWidth: geom.cssWidth, cssHeight: geom.cssHeight })
       control({
         kind: 'resize',
         width: geom.width,
@@ -190,11 +203,12 @@ function mountViewport(api, canvas, wrap, signal, status, producerId, onCapabili
   // rounded corners/shadows over the main surface.
   const createLayerRenderer = async (target, { transparent = false } = {}) => {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
-    if (!adapter) throw new Error('WebGPU adapter unavailable')
+    if (!adapter) { dlog('webgpu adapter unavailable', { transparent }); throw new Error('WebGPU adapter unavailable') }
     const layerDevice = await adapter.requestDevice()
     const layerContext = target.getContext('webgpu')
     const format = navigator.gpu.getPreferredCanvasFormat()
     layerContext.configure({ device: layerDevice, format, alphaMode: transparent ? 'premultiplied' : 'opaque' })
+    layerDevice.lost.then(info => { if (!canceled) dlog('webgpu device lost', { transparent, message: info.message, reason: info.reason }) })
     const module = layerDevice.createShaderModule({ code: transparent ? `
 struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
@@ -223,7 +237,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const pass = encoder.beginRenderPass({ colorAttachments: [{ view: layerContext.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: transparent ? [0, 0, 0, 0] : [0, 0, 0, 1] }] })
         pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.draw(3); pass.end()
         layerDevice.queue.submit([encoder.finish()])
-        await layerDevice.queue.onSubmittedWorkDone()
+        await layerDevice.queue.onSubmittedWorkDone().catch(error => { dlog('render submit error', { transparent, message: error?.message ?? String(error) }); throw error })
       },
     }
   }
@@ -258,6 +272,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (!producers.some(producer => producer.id === producerId && producer.extensions.includes('godot.demo.v1'))) throw new Error(`Producer unavailable: ${producerId}`)
     const session = await api.attach(producerId)
     generation = session.generation
+    dlog('attached', { producerId, generation, protocol: api.capabilities?.protocol })
     features = Array.isArray(session.features) ? session.features : []
     onCapabilities?.(features)
     if (canceled) return
@@ -266,18 +281,23 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const window = ticket.window ?? 0
       if (window !== 0) {
         const layer = layers.get(window)
-        if (!layer) return
-        await layer.present(frame, ticket)
+        if (!layer) {
+          unknownWindowFrames.set(window, (unknownWindowFrames.get(window) ?? 0) + 1)
+          if (unknownWindowFrames.get(window) === 1 || unknownWindowFrames.get(window) % 100 === 0) dlog('frame for unknown window (dropped)', { window, drops: unknownWindowFrames.get(window), known: [...layers.keys()] })
+          return
+        }
+        if (layer.frames === 0) dlog('layer first frame', { window, w: ticket.width, h: ticket.height, epoch: ticket.epoch })
+        await layer.present(frame, ticket).catch(error => dlog('layer present error', { window, message: error?.message ?? String(error) }))
         return
       }
       const present = mainPresentQueue.then(async () => {
         if (canceled) return
         if (canvas.width !== ticket.width) canvas.width = ticket.width
         if (canvas.height !== ticket.height) canvas.height = ticket.height
-        await mainRenderer.render(frame)
+        await mainRenderer.render(frame).catch(error => { dlog('main render error', { message: error?.message ?? String(error), frames }); throw error })
         frames++
         canvas.dataset.frames = String(frames); canvas.dataset.inputSeq = String(ticket.inputSeq); canvas.dataset.epoch = String(ticket.epoch)
-        if (frames === 1 || frames % 60 === 0) status(`${session.backend} · ${frames} frames · inputSeq ${ticket.inputSeq}`)
+        if (frames === 1 || frames % 60 === 0) { status(`${session.backend} · ${frames} frames · inputSeq ${ticket.inputSeq}`); dlog('main frames', { frames, inputSeq: ticket.inputSeq, epoch: ticket.epoch, w: ticket.width, h: ticket.height, layers: layers.size }) }
       })
       mainPresentQueue = present.catch(() => {})
       await present
@@ -404,6 +424,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const syncLayer = state => {
       let layer = layers.get(state.window)
       if (!layer) {
+        dlog('layer create', { window: state.window, rect: state.rect, z: state.z, visible: state.visible, transparent: state.transparent })
         const element = document.createElement('canvas')
         element.className = 'g101-layer'
         element.tabIndex = 0
@@ -429,20 +450,25 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         }
         layer.ready = createLayerRenderer(element, { transparent: state.transparent === true })
           .then(renderer => {
-            if (!canceled && layers.get(state.window) === layer) layer.gpu = renderer
+            if (!canceled && layers.get(state.window) === layer) { layer.gpu = renderer; dlog('layer gpu ready', { window: state.window }) }
             else renderer.device.destroy()
           })
-        layer.ready.catch(error => status(`Layer ${state.window}: ${error.message}`))
+        layer.ready.catch(error => { status(`Layer ${state.window}: ${error.message}`); dlog('layer gpu error', { window: state.window, message: error?.message ?? String(error) }) })
         bindLayerInput(layer)
         layers.set(state.window, layer)
       }
       layer.state = state
+      const prevCss = layer.cssRect
       applyLayerGeometry(layer)
+      if (!prevCss || prevCss.x !== layer.cssRect.x || prevCss.y !== layer.cssRect.y || prevCss.width !== layer.cssRect.width || prevCss.height !== layer.cssRect.height || layer.canvas.style.display !== (state.visible ? '' : 'none')) {
+        dlog('layer geometry', { window: state.window, css: layer.cssRect, z: state.z, visible: state.visible, frames: layer.frames })
+      }
       return layer
     }
     const destroyLayer = window => {
       const layer = layers.get(window)
-      if (!layer) return
+      if (!layer) { dlog('layer destroy (no layer)', { window }); return }
+      dlog('layer destroy', { window, frames: layer.frames, css: layer.cssRect })
       layers.delete(window)
       layer.presentQueue = layer.presentQueue.then(() => { layer.gpu?.device.destroy() })
       layer.canvas.remove()
@@ -669,6 +695,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         return
       }
       if (event.type === 'extension' && event.namespace === 'godot.window.v1') {
+        dlog('event window.' + event.name, event.payload)
         if (!multiWindow()) return
         const payload = event.payload ?? {}
         if (event.name === 'focus' && typeof payload.window === 'number') {
@@ -684,6 +711,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         return
       }
       if (event.type === 'extension' && event.namespace === 'godot.editor.v1') {
+        dlog('event editor.' + event.name, event.payload)
         handleEditorEvent(event.name, event.payload)
         return
       }
@@ -694,12 +722,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         // interaction.map.v2; without them the surface is physical-only.
         const window = event.window ?? 0
         if (window !== 0) {
+          dlog('surface receipt', { window, width: event.width, height: event.height, cssWidth: event.cssWidth, cssHeight: event.cssHeight })
           const layer = layers.get(window)
           if (layer && event.width > 0 && event.height > 0) {
             layer.appliedSurface = { width: event.width, height: event.height, cssWidth: event.width, cssHeight: event.height }
           }
           return
         }
+        dlog('surface receipt', { window: 0, width: event.width, height: event.height, cssWidth: event.cssWidth, cssHeight: event.cssHeight, scale: event.scale, epoch: event.epoch })
         resizeScheduler.acknowledge(event)
         if (event.width > 0 && event.height > 0) {
           factors = engineMapFactors({ width: event.width, height: event.height,
@@ -712,8 +742,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           : null
         return
       }
-      if (event.type === 'error') { status(event.message); dispose().catch(error => status(error.message)) }
-      if (event.type === 'disposed' && !canceled) { status('Native viewport disposed'); dispose().catch(error => status(error.message)) }
+      if (event.type === 'error') { dlog('session error', { message: event.message }); status(event.message); dispose().catch(error => status(error.message)) }
+      if (event.type === 'disposed' && !canceled) { dlog('session disposed', { generation: event.generation }); status('Native viewport disposed'); dispose().catch(error => status(error.message)) }
     })
     on(canvas, 'focus', () => { focusedWindow = 0; input(withWindow({ type: 'focus', focused: true }, 0)) })
     on(canvas, 'blur', () => { if (document.activeElement !== imeElement) focusLost(focusedWindow) })
@@ -743,6 +773,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     }
   }
   const dispose = () => cleanupPromise ??= (async () => {
+    if (!canceled) dlog('dispose', { producerId, frames, layers: [...layers.keys()] })
     canceled = true
     signal.removeEventListener('abort', abort)
     resizeScheduler.cancel()

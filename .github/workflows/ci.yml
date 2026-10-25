@@ -1,0 +1,38 @@
+# PR/push gate: typecheck + client build + unit tests. No engine build (scons),
+# no GPU needed — the heavy pipeline lives in release.yml and runs on tags.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 'Pin link: devDependencies for a standalone checkout'
+        run: node scripts/ci-pin-deps.mjs
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Check (typecheck + build + tests)
+        run: pnpm run check
+
+      - name: CHANGELOG entry matches package.json version
+        run: node -e "const {readFileSync}=require('node:fs');const v=require('./package.json').version;if(!readFileSync('CHANGELOG.md','utf8').includes('## ['+v+']')){console.error('CHANGELOG.md has no [## ['+v+']] section — add one before releasing');process.exit(1)}"

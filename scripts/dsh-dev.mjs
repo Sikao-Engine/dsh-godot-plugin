@@ -4,7 +4,9 @@ import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const source = resolve(process.env.DSH_SOURCE_DIR ?? [resolve(root, '../deepseek-harness-3d'), resolve(root, '../../ai/deepseek-harness')].find(candidate => existsSync(join(candidate, 'package.json'))) ?? resolve(root, '../deepseek-harness-3d'))
+const tarball = join(root, 'dist', `${pkg.name}-${pkg.version}.tgz`)
 const home = join(root, '.dsh-dev', 'home')
 const userData = join(root, '.dsh-dev', 'electron-user-data')
 const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
@@ -44,7 +46,8 @@ switch (action) {
     await run(['run', 'start:desktop'])
     break
   case 'install-desktop':
-    await run(['run', 'dsh', 'plugin', '--profile', 'desktop', 'add', join(root, 'dist/dsh-godot-plugin-0.1.0.tgz')])
+    if (!existsSync(tarball)) throw new Error(`Missing ${tarball}. Run: pnpm run release:pack`)
+    await run(['run', 'dsh', 'plugin', '--profile', 'desktop', 'add', tarball])
     break
   case 'install-web':
     await run(['run', 'dsh', 'plugin', '--profile', 'web', 'add', `link:${root.replaceAll('\\', '/')}`])

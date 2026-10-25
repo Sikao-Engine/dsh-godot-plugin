@@ -167,7 +167,13 @@ pnpm run release:publish -- --dry-run    :: 预演（不真正创建）
 node scripts\publish.mjs github           :: 或只发 GitHub
 ```
 
-`publish.mjs github`：校验 origin 为 GitHub 远端、工作区干净、`v<version>` tag 存在 → `gh release create v0.2.0 dist/<tgz> --notes-file doc/acceptance/build-and-package.zh.md`。Git spec 安装（`github:owner/repo@tag`）即拉取该 Release 资产或仓库 tarball。
+publish.mjs github：校验 origin 为 GitHub 远端、工作区干净、v<version> tag 存在 → 生成 dist/SHA256SUMS.txt（tgz 的 SHA-256）→ gh release create 同时上传 tgz + SHA256SUMS.txt。Release notes 取自 CHANGELOG.md 的 `## [<version>]` 小节（Keep a Changelog 格式，尾部队 link reference 定义自动剔除）；无对应小节时回退本验收文档。
+
+2.2.1 CI 自动发布（推荐路径）
+
+`.github/workflows/release.yml`：推送 `v*` tag 即触发（workflow_dispatch 可指定既有 tag 重发）。步骤：SSH→HTTPS 重写子模块 URL（私有 fork 配 secret `GH_SUBMODULE_PAT`；公开 fork 无需 secret）→ 检出（recursive 子模块）→ **校验 tag 与 package.json version 一致（不一致立即失败）** → pnpm 安装（ci-pin-deps.mjs 先把 link: 开发依赖钉到 peerDependencies 的 registry 版本）→ pip 装 scons → scons 构建 worker（template_release）与 editor（cache_path 挂 actions/cache，key 含 godot 子模块 commit）→ release:stage → `pnpm run check` → advisory `godot:verify`/`godot:verify:editor`（GHA runner 无 GPU，continue-on-error，真实协议验收以开发机为准）→ release:pack → 上传 dist/ 工件 → `node scripts/publish.mjs github` 建 Release。
+
+本地手动发布路径保持不变：pnpm run release:pack && node scripts/publish.mjs github（要求 tag 已存在）。
 
 ### 2.3 发布到 npm 源
 
@@ -183,13 +189,26 @@ node scripts\publish.mjs npm -- --tag beta    :: 预发布通道
 - [ ] `license` 当前为 `UNLICENSED`——对外发布前改为实际许可证；
 - [ ] `engines.dsh` 与实际上游协议版本一致（当前 `0.2.1-rc.3`）。
 
-### 2.4 版本与同步流程
+2.4 版本与同步流程
 
-1. fork 改动合并后：`pnpm run godot:build && pnpm run godot:stage`（manifest 记录新 godotCommit）；
-2. 递增 `package.json` version；
-3. `pnpm run release:pack` 本地验收；
-4. tag → `publish.mjs github` / `publish.mjs npm`；
-5. 下游升级：`dsh plugins install dsh-godot-plugin@<new>`。
+1. fork 改动合并后：pnpm run godot:build && pnpm run godot:stage（manifest 记录新 godotCommit）；
+2. `node scripts/publish.mjs version <x.y.z|patch|minor|major>` 递增版本（semver 校验、拒绝降级；prerelease 递增自动晋级，如 0.2.1-rc.3 --patch → 0.2.1）；
+3. 补 CHANGELOG.md 的 `## [<x.y.z>] - <date>` 小节（ci.yml 与 publish.mjs github 双守卫：无小节 CI 失败、notes 回退验收文档）；
+4. pnpm run check 与 pnpm run godot:verify 全绿，桌面端到端按 1.7 矩阵验收；
+5. `git tag v<x.y.z> && git push origin v<x.y.z>` → release.yml 全自动发布；或本地 pnpm run release:pack && node scripts/publish.mjs github（/ npm）；
+6. 下游升级见 2.5。
+
+2.5 下游安装（Release 资产）
+
+Release 资产 tgz 是预构建包（worker + editor 二进制齐备）：用户机器**不需要任何构建工具链**（Node/pnpm/VS/SCons 均不需要），运行时仅需 Windows x64 + Vulkan 驱动 + 原生视口预览 fork 的 DSH。三种等价安装方式：
+
+1. 应用内「插件」页：安装本地文件，选择下载的 tgz（desktop profile 必须走应用内插件页，见 1.4）；
+2. CLI 本地文件：`dsh plugin --profile desktop add C:\path\dsh-godot-plugin-<x.y.z>.tgz`；
+3. CLI 直链：`dsh plugin --profile desktop add https://github.com/<owner>/<repo>/releases/download/v<x.y.z>/dsh-godot-plugin-<x.y.z>.tgz`。
+
+校验：`certutil -hashfile dsh-godot-plugin-<x.y.z>.tgz SHA256` 比对 SHA256SUMS.txt；runtime-manifest.json 另内嵌 worker 的 SHA-256，插件加载时由 DSH 契约测试覆盖。
+
+注意：`github:<owner>/<repo>@<tag>` 形态不可用——pnpm 会从 git 拉源码构建，但本仓库 native/win32-x64/ 与子模块内容均不进 git（.gitignore），装出来没有 worker 二进制。该形态只适用于「仓库自包含构建产物或 prepare 脚本」的插件；本插件的终端用户一律走 Release 资产 tgz（或 npm 源 `dsh plugin --profile desktop add dsh-godot-plugin@<version>`）。
 
 ## 3. 故障对照
 

@@ -1,12 +1,15 @@
 // Packaging + publishing for dsh-godot-plugin:
-//   pack    - produce dist/dsh-godot-plugin-<version>.tgz (npm tarball)
-//   npm     - publish to an npm registry from a cleaned staging copy
-//   github  - create a GitHub Release and attach the tarball (gh CLI)
-//   all     - pack, then npm + github
+//   pack         - produce dist/dsh-godot-plugin-<version>.tgz (npm tarball)
+//   npm          - publish to an npm registry from a cleaned staging copy
+//   github       - create a GitHub Release (tarball + SHA256SUMS.txt) via gh CLI
+//   all          - pack, then npm + github
+//   version <v>  - bump package.json version (semver or patch|minor|major),
+//                  then remind about CHANGELOG / tag / push follow-ups
 // Prerelease safety: dev `link:` dependencies are stripped in the npm staging
 // copy; GitHub publishing requires a clean git state and a version tag.
-// Usage: node scripts/publish.mjs pack|npm|github|all [--dry-run] [--tag <npm-tag>]
+// Usage: node scripts/publish.mjs pack|npm|github|all|version [...] [--dry-run] [--tag <npm-tag>]
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -46,6 +49,68 @@ function runNpm(args, options = {}) {
   return run(resolved.command, resolved.args, options)
 }
 const log = message => console.log(`[publish] ${message}`)
+
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+function parseSemver(version) {
+  const match = SEMVER.exec(version)
+  if (!match) return undefined
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease: match[4] }
+}
+function compareSemver(a, b) {
+  const left = parseSemver(a); const right = parseSemver(b)
+  if (!left || !right) return NaN
+  for (const key of ['major', 'minor', 'patch']) {
+    if (left[key] !== right[key]) return left[key] - right[key]
+  }
+  // A version without prerelease outranks the same version with one.
+  if (left.prerelease === right.prerelease) return 0
+  if (left.prerelease === undefined) return 1
+  if (right.prerelease === undefined) return -1
+  return left.prerelease < right.prerelease ? -1 : 1
+}
+function bumpVersion(current, spec) {
+  const parsed = parseSemver(current)
+  if (!parsed) throw new Error(`Current package.json version is not semver: ${current}`)
+  if (SEMVER.test(spec)) return spec
+  const level = { major: 'major', minor: 'minor', patch: 'patch' }[spec]
+  if (!level) throw new Error(`Usage: version <semver|patch|minor|major>, got: ${spec}`)
+  // Incrementing on a prerelease (e.g. 0.2.1-rc.3) promotes it; on a release it
+  // bumps the requested component and resets everything below it.
+  const next = { ...parsed }
+  if (next.prerelease !== undefined) next.prerelease = undefined
+  else if (level === 'major') { next.major += 1; next.minor = 0; next.patch = 0 }
+  else if (level === 'minor') { next.minor += 1; next.patch = 0 }
+  else next.patch += 1
+  return `${next.major}.${next.minor}.${next.patch}`
+}
+function writeVersion(version) {
+  const updated = { ...pkg, version }
+  writeFileSync(join(root, 'package.json'), JSON.stringify(updated, null, 2) + '\n')
+}
+function changelogPath() { return join(root, 'CHANGELOG.md') }
+function changelogHasEntry(version) {
+  if (!existsSync(changelogPath())) return false
+  return readFileSync(changelogPath(), 'utf8').includes(`## [${version}]`)
+}
+function releaseNotes(version) {
+  // Prefer the CHANGELOG section for this version; fall back to the acceptance doc.
+  if (existsSync(changelogPath())) {
+    const text = readFileSync(changelogPath(), 'utf8')
+    // Keep a Changelog heading: `## [1.2.3] - 2026-10-25` (date optional).
+    const match = new RegExp(`^## \\[${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\](?:\\s*-\\s*\\d{4}-\\d{2}-\\d{2})?\\s*$`, 'm').exec(text)
+    if (match) {
+      const rest = text.slice(match.index + match[0].length)
+      const end = rest.search(/^## \[/m)
+      let lines = (end === -1 ? rest : rest.slice(0, end)).trim().split('\n')
+      // Strip the Keep-a-Changelog link reference definitions trailing the file
+      // (e.g. `[0.2.0]: https://...`) — they belong to the document, not the notes.
+      while (lines.length && (/^\s*$/u.test(lines[lines.length - 1]) || /^\[[^\]]+\]:\s*\S+$/u.test(lines[lines.length - 1]))) lines.pop()
+      const section = lines.join('\n').trim()
+      if (section) return { body: section, source: 'CHANGELOG.md' }
+    }
+  }
+  return { body: readFileSync(join(root, 'doc/acceptance/build-and-package.zh.md'), 'utf8'), source: 'doc/acceptance/build-and-package.zh.md' }
+}
 
 function ensureReleaseReady() {
   for (const required of ['lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'runtime-manifest.json', 'runtime-manifest.editor.json',
@@ -114,10 +179,43 @@ function publishGithub(tarballPath) {
   if (dirty) throw new Error('Working tree is dirty; commit everything before creating a release.')
   run('git', ['-C', root, 'rev-parse', `v${pkg.version}`]) // fails when the tag is missing
   const releaseTag = `v${pkg.version}`
+  // Ship a checksum file next to the tarball so installs can be verified
+  // (runtime-manifest.json also embeds per-file SHA-256, but only for the worker).
+  const checksums = join(root, 'dist', 'SHA256SUMS.txt')
+  const digest = createHash('sha256').update(readFileSync(tarballPath)).digest('hex')
+  const tarballName = tarballPath.split(/[\\/]/).pop()
+  writeFileSync(checksums, `${digest}  ${tarballName}\n`)
+  log(`checksums: ${digest}  ${tarballName}`)
+  const notes = releaseNotes(pkg.version)
+  log(`release notes source: ${notes.source}`)
+  const notesFile = join(tmpdir(), `dsh-godot-plugin-notes-${pkg.version}.md`)
+  writeFileSync(notesFile, notes.body + '\n')
   log(`creating GitHub release ${releaseTag} in ${repoMatch[1]} …`)
-  if (dryRun) { log(`dry-run: gh release create ${releaseTag} ${tarballPath}`); return }
-  run('gh', ['release', 'create', releaseTag, tarballPath, '--repo', repoMatch[1], '--title', `dsh-godot-plugin ${pkg.version}`, '--notes-file', join(root, 'doc/acceptance/build-and-package.zh.md')])
+  if (dryRun) { log(`dry-run: gh release create ${releaseTag} ${tarballPath} ${checksums}`); rmSync(notesFile, { force: true }); return }
+  try {
+    run('gh', ['release', 'create', releaseTag, tarballPath, checksums, '--repo', repoMatch[1], '--title', `dsh-godot-plugin ${pkg.version}`, '--notes-file', notesFile])
+  } finally {
+    rmSync(notesFile, { force: true })
+  }
   log(`GitHub release published: ${repoMatch[1]}/releases/tag/${releaseTag}`)
+}
+
+function bumpCommand() {
+  const spec = process.argv[3]
+  if (!spec) throw new Error('Usage: node scripts/publish.mjs version <semver|patch|minor|major>')
+  const next = bumpVersion(pkg.version, spec)
+  if (compareSemver(next, pkg.version) <= 0) throw new Error(`Refusing to bump ${pkg.version} -> ${next} (must increase)`)
+  log(`bumping ${pkg.name} ${pkg.version} -> ${next}`)
+  if (dryRun) { log('dry-run: package.json unchanged'); return }
+  writeVersion(next)
+  if (!changelogHasEntry(next)) {
+    log(`note: CHANGELOG.md has no [${next}] section yet — add one before tagging.`)
+  }
+  log('next steps:')
+  log(`  1. pnpm run check && pnpm run godot:verify   (runtime gates)`)
+  log(`  2. commit + push, then: git tag v${next} && git push origin v${next}`)
+  log(`     (pushing the tag triggers .github/workflows/release.yml)`)
+  log(`  3. or publish manually: pnpm run release:pack && node scripts/publish.mjs github`)
 }
 
 try {
@@ -125,7 +223,8 @@ try {
   else if (mode === 'npm') { ensureReleaseReady(); publishNpm() }
   else if (mode === 'github') publishGithub(existsSync(tarball) ? tarball : pack())
   else if (mode === 'all') { publishNpm(); publishGithub(pack()) }
-  else throw new Error('Usage: node scripts/publish.mjs pack|npm|github|all [--dry-run] [--tag <npm-dist-tag>]')
+  else if (mode === 'version') bumpCommand()
+  else throw new Error('Usage: node scripts/publish.mjs pack|npm|github|all|version [...] [--dry-run] [--tag <npm-dist-tag>]')
 } catch (error) {
   console.error(`[publish] failed: ${error.message}`)
   process.exitCode = 1

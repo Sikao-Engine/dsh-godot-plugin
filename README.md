@@ -19,13 +19,28 @@ pnpm run dsh:install:web
 
 ## 打包导出
 
+## 打包导出与发布
 ```bat
-pnpm run release:pack       :: dist\dsh-godot-plugin-0.2.0.tgz（npm tarball，含 60 MiB worker）
-node scripts\publish.mjs github   :: gh release create v0.2.0（需干净树 + tag）
-node scripts\publish.mjs npm      :: 清洁 staging 后 npm publish（可 --tag beta）
+pnpm run release:pack :: dist\dsh-godot-plugin-0.2.0.tgz（npm tarball，含 worker + editor）
+node scripts\publish.mjs version 0.3.0 :: 递增版本（或 patch|minor|major）
+node scripts\publish.mjs github :: gh release create v0.2.0（需干净树 + tag，附 SHA256SUMS.txt）
+node scripts\publish.mjs npm :: 清洁 staging 后 npm publish（可 --tag beta）
 ```
+发布流程（详见 `doc/acceptance/build-and-package.zh.md` 第 2 节）：
+1. `node scripts/publish.mjs version <x.y.z>` 递增版本，补 `CHANGELOG.md` 对应小节；
+2. `pnpm run check` 与 `pnpm run godot:verify` 全绿，桌面端到端按验收矩阵过一遍；
+3. `git tag v<x.y.z> && git push origin v<x.y.z>` —— `.github/workflows/release.yml` 自动完成 scons 构建 → stage → pack → 建 Release（资产：tgz + SHA256SUMS.txt，notes 取自 CHANGELOG）；也可本地 `pnpm run release:pack && node scripts/publish.mjs github` 手动发布。
 
-下游安装：`dsh plugins install <tgz|dsh-godot-plugin@version|github:owner/repo@tag>`。详见 `doc/acceptance/build-and-package.zh.md` 第 2 节。
+## 用户安装（GitHub Release）
+Release 资产 `dsh-godot-plugin-<version>.tgz` 是**预构建**包（含 60 MiB worker，无需任何工具链）。三种等价方式：
+```bat
+:: A. 应用内「插件」页：安装本地文件，选下载好的 tgz
+:: B. CLI 安装本地文件
+dsh plugin --profile desktop add "C:\path\to\dsh-godot-plugin-0.2.0.tgz"
+:: C. CLI 直链安装（无需先下载）
+dsh plugin --profile desktop add https://github.com/Sikao-Engine/dsh-godot-plugin/releases/download/v0.2.0/dsh-godot-plugin-0.2.0.tgz
+```
+注意：`github:owner/repo@tag` 形态会从 git 源码构建——本仓库的引擎二进制与子模块不进 git（见 .gitignore），该形态**装出来没有 worker**，仅供能完整构建引擎的开发者使用；终端用户请用 Release 资产 tgz。npm 源用户：`dsh plugin --profile desktop add dsh-godot-plugin@<version>`。
 
 ## 当前能力
 
@@ -38,7 +53,8 @@ node scripts\publish.mjs npm      :: 清洁 staging 后 npm publish（可 --tag 
 
 - `godot/`：fork 子模块（分支 `dsh_godot_plugin`），输出层重构 + worker。
 - `scripts/godot.mjs`：build/stage/verify/doctor 工具链入口。
-- `scripts/publish.mjs`：pack / GitHub Release / npm 发布。
+- scripts/publish.mjs：pack / version（版本递增）/ GitHub Release（附 SHA256SUMS + CHANGELOG notes）/ npm 发布；scripts/ci-pin-deps.mjs：CI 专用 link: 依赖钉版。
+- .github/workflows/release.yml：tag 推送触发全自动化发布（scons 构建 → stage → pack → Release）；ci.yml：PR 跑 check + CHANGELOG 版本小节守卫。
 - `src/index.ts`：Cordis 服务 `ctx.godotIntegration`，注册原生 producer。
 - `src/client.js`：右侧「Godot 视口」面板（attach/输入/WebGPU 呈现；手势抑制、resize 去抖与瞬态重映射）。
 - `src/interaction-map.mjs`：CSS↔物理坐标映射、瞬态重映射与 resize 调度纯函数（client 与单测共用）。

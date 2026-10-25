@@ -93,7 +93,7 @@ pnpm run dsh:dump                  :: 组合树应含 dsh-godot-plugin 条目
 
 ### 1.6 Editor worker（构建验证已通过，长尾交互延后）
 
-同一套输出层重构直接承载 Godot editor——editor 就是 SceneTree 的一个 payload（`main.cpp:4687` 的 `EditorNode` 分支），渲染与输入管线与运行时完全一致。子窗口因 `has_feature(FEATURE_SUBWINDOWS)=false` 自动内嵌（`window.cpp:3382`），与 editor 的 `single_window_mode` 叠加后无需多窗口支持。
+同一套输出层重构直接承载 Godot editor——editor 就是 SceneTree 的一个 payload（`main.cpp:4687` 的 `EditorNode` 分支），渲染与输入管线与运行时完全一致。**多窗口协议 v2.1 已实施**：`has_feature(FEATURE_SUBWINDOWS)` 返回真值，editor 弹窗/对话框成为真子窗口（独立 surface + 2 槽帧环 + 客户端图层合成），FBX 导入预览与 Game tab 游戏嵌入可用；`has_feature(FEATURE_WINDOW_EMBEDDING)` 在 editor stage 为真，游戏经第二个 broker session 运行（`EmbeddedProcessDSH`，详见 `doc/design/multi-window-protocol-v3.zh.md`）。
 
 ```bat
 pnpm run godot:build:editor        :: target=editor（137 MiB，debug_symbols 便于崩溃定位）
@@ -129,6 +129,12 @@ editor producer 的注册 args 为 `-e --path <packageRoot>/native/editor-projec
 | 13 | 编辑器 hover | 编辑器模式鼠标扫过菜单/工具栏 | hover 重绘正常，点击命中正确 |
 | 14 | graphics101 回归 | 切到 graphics101 面板（若安装）操作相机 | 行为与旧版一致（无 features 回退路径） |
 | 15 | 文件拖放意图 | 从资源管理器拖 .glb/.png 到视口（默认开）；再取消勾选拖一个 | 默认开：虚线高亮，松手后导入 Godot（editor 模式出现在 FileSystem/视口实例化），宿主不出现导入提示；取消后恢复宿主导入流程 |
+| 16 | FBX 导入预览 | editor 模式双击 .fbx | Advanced Import Settings 完整显示（不被主视口裁剪）、3D 预览可交互、确认/取消生效 |
+| 17 | 通用弹窗 | 右键菜单、tooltip、AcceptDialog、EditorFileDialog、Project Settings | 弹窗内容完整渲染、可交互，位置随引擎 rect 事件 |
+| 18 | 焦点/输入隔离 | 弹窗内文本框输入（含中文 IME）；Ctrl+S 等快捷键 | 输入只作用于焦点窗口；快捷键不串到主窗口 |
+| 19 | 透明弹窗 | 打开带圆角/阴影的 PopupMenu | 透明区域不糊底（alpha 合成正确） |
+| 20 | 拖放路由 | 文件拖到子窗口区域 | drop 按窗口路由（导入到弹窗对应目标） |
+| 21 | 游戏 tab | editor 模式 Play（嵌入开关两种模式） | 游戏画面出现在 GameView 区域、随 GameView 尺寸变化、Stop 干净停止、断点命中可用 |
 
 验收记录填写：日期 / DSH 版本 / Electron 版本 / GPU / 每项 PASS-FAIL。
 

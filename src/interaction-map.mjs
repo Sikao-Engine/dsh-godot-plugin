@@ -18,6 +18,11 @@ export const FEATURE_MAP_V2 = 'interaction.map.v2'
 export const FEATURE_TEXT = 'input.text'
 export const FEATURE_IME = 'input.ime'
 export const FEATURE_POINTER_LOCK = 'pointer.lock'
+export const FEATURE_WINDOWS_MULTI = 'windows.multi.v1'
+export const FEATURE_DROP = 'input.drop'
+
+/** Protocol v2.1: at most 16 windows per session (ids 0..15, 0 = main). */
+export const MAX_WINDOWS = 16
 
 export function hasFeature(features, name) {
   return Array.isArray(features) && features.includes(name)
@@ -82,6 +87,72 @@ export function transientRemap(x, y, appliedSurface, rect) {
   return {
     x: x * (appliedSurface.cssWidth / rect.width),
     y: y * (appliedSurface.cssHeight / rect.height),
+  }
+}
+
+/**
+ * Protocol v2.1 window geometry: engine rects live in the virtual screen's
+ * physical pixels (main window origin at (0,0)); a layer is positioned inside
+ * the viewport wrap in CSS px. The session-level map factors (physical px per
+ * CSS px, locked by the main-window resize) convert both axes.
+ */
+export function engineRectToLayerCss(rect, mainPosition, factors) {
+  const mapScaleX = Number.isFinite(factors?.mapScaleX) && factors.mapScaleX > 0 ? factors.mapScaleX : 1
+  const mapScaleY = Number.isFinite(factors?.mapScaleY) && factors.mapScaleY > 0 ? factors.mapScaleY : 1
+  const mainX = Number.isFinite(mainPosition?.x) ? mainPosition.x : 0
+  const mainY = Number.isFinite(mainPosition?.y) ? mainPosition.y : 0
+  return {
+    x: (rect.x - mainX) / mapScaleX,
+    y: (rect.y - mainY) / mapScaleY,
+    width: rect.width / mapScaleX,
+    height: rect.height / mapScaleY,
+  }
+}
+
+/**
+ * Pure reducer for the godot.window.v1 lifecycle events. `layers` is a Map of
+ * window id -> layer state {window, rect, z, visible, focused, title}; the
+ * reducer returns a new Map (never mutates). Unknown windows on rect/focus
+ * events are ignored until their `created` arrives (eventual order safety).
+ */
+export function reduceWindowEvent(layers, name, payload) {
+  const next = new Map(layers)
+  const window = payload?.window
+  if (!Number.isInteger(window) || window < 0 || window >= MAX_WINDOWS) return next
+  const current = next.get(window)
+  switch (name) {
+    case 'created': {
+      next.set(window, {
+        window,
+        rect: payload.rect ?? { x: 0, y: 0, width: 0, height: 0 },
+        z: Number.isInteger(payload.z) ? payload.z : window,
+        visible: false,
+        focused: false,
+        title: typeof payload.title === 'string' ? payload.title : '',
+        transparent: payload.transparent === true,
+      })
+      return next
+    }
+    case 'destroyed':
+      next.delete(window)
+      return next
+    case 'rect':
+      if (current) next.set(window, { ...current, rect: payload.rect ?? current.rect })
+      return next
+    case 'visibility':
+      if (current) next.set(window, { ...current, visible: payload.visible === true })
+      return next
+    case 'title':
+      if (current) next.set(window, { ...current, title: typeof payload.title === 'string' ? payload.title : current.title })
+      return next
+    case 'focus':
+      if (current) next.set(window, { ...current, focused: payload.focused === true })
+      return next
+    case 'raised':
+      if (current) next.set(window, { ...current, z: Number.isInteger(payload.z) ? payload.z : current.z })
+      return next
+    default:
+      return next
   }
 }
 

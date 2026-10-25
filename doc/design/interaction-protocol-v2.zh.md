@@ -92,3 +92,17 @@
 
 - 自动化：`pnpm run godot:verify`（runtime，8 步，含 coordinateMapping：css≠phys 映射、wheel 坐标、右键/Shift+左键平移、movementX 增量、失焦清拖、cancel 修复、setRightDrag、键字符 unicode 断言（`key:'n'`→lastUnicode 110、无字符键保持 0）、drop 路径断言（lastDropPaths 回显）、legacy 回退）；`pnpm run godot:verify:editor`；`node --test tests/interaction-map.test.mjs`；上游 `vitest apps/desktop/tests/native-viewport-protocol.spec.ts`。
 - 手工验收矩阵：`doc/acceptance/build-and-package.zh.md` §1.7。
+
+## 8. 协议 v2.1 增量：多窗口（2026-10-25 实施）
+
+线协议保持版本 2；全部新字段可选、增量、向后兼容。能力协商：worker hello `features` 声明
+`windows.multi.v1` 后，下列字段才合法（validator 显式拒绝未协商的窗口字段，见上游
+`native-viewport.zh.md` v2.1 一节与 `multi-window-protocol-v3.zh.md`）：
+
+- worker → broker：`frame`/`surface` 增可选 `window`（0..15，缺省 0）；`surface` 增 `slots`；
+  窗口生命周期走 extension 命名空间 `godot.window.v1`（created/destroyed/rect/visibility/title/focus/raised）。
+- client → worker：`resize`/`input`/`focus` 增可选 `window`；`release` 按 `window` 归还租约；
+  子窗口输入坐标为图层局部 CSS px。
+- 游戏派生：`godot.editor.v1`（spawnGame/gameRect/gameClose + gameLifecycle 回报）与
+  `NativeViewportApi.spawn`；配额 16 窗口 / 24 槽 / 4 session。
+- 兼容性：不带 `window` 的消息语义与 v2 一致（runtime demo 旧行为不变）。

@@ -13,7 +13,8 @@ socket.addEventListener('message', event => {
   const task = pending.get(data.id)
   if (!task) return
   pending.delete(data.id); clearTimeout(task.timer)
-  data.error ? task.reject(new Error(JSON.stringify(data.error))) : task.resolve(data.result)
+  if (data.error) task.reject(new Error(JSON.stringify(data.error)))
+  else task.resolve(data.result)
 })
 const call = (method, params = {}) => new Promise((resolve, reject) => {
   const id = ++seq
@@ -21,9 +22,21 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
   pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }))
 })
 try {
-  if (process.argv[2] === 'screenshot') {
+  if (process.argv[2] === 'click' || process.argv[2] === 'click-local') {
+    let x = Number(process.argv[3]), y = Number(process.argv[4])
+    if (process.argv[2] === 'click-local') {
+      const selector = process.argv[5] ?? '.g101-canvas'
+      const geometry = await call('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().toJSON()`, returnByValue: true })
+      x += geometry.result.value.x
+      y += geometry.result.value.y
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Click requires finite x and y')
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
+    await call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
+    await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
+  } else if (process.argv[2] === 'screenshot') {
     const result = await call('Page.captureScreenshot', { format: 'png' })
-    writeFileSync(new URL('../.graphics101-results/dsh-desktop.png', import.meta.url), Buffer.from(result.data, 'base64'))
+    writeFileSync(new URL('../.dsh-dev/dsh-desktop.png', import.meta.url), Buffer.from(result.data, 'base64'))
   } else {
     const expression = process.argv[2] ?? 'JSON.stringify({url:location.href,text:document.body.innerText,buttons:[...document.querySelectorAll("button")].map(x=>({text:x.innerText,aria:x.getAttribute("aria-label")})),native:globalThis.dshDesktop?.nativeViewports?.capabilities})'
     const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: true })

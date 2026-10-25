@@ -15,7 +15,8 @@
 - [x] M2（DSH 通用 Native Viewport seam，协议 2）。
 - [x] M3（可安装发行插件，tarball + manifest，本目录 `../acceptance/build-and-package.zh.md`）。
 - [x] M4 主体（输出层重构 + Godot worker：Vulkan 直写 D3D11 共享纹理、真实渲染场景、通用输入、租约、60fps 假 broker 验收 `godot:verify` 全绿）；M4 剩余：桌面端到端 Electron 组合验收、运行用户工程场景。
-- [ ] M5-A/M5-B（Godot 编辑工作台 / 完整编辑器嵌入）。
+- [x] M5 主体（多窗口协议 v2.1：真子窗口 + FBX 导入预览 + Game tab 游戏嵌入，`godot:verify`/`godot:verify:editor` 全绿；设计记录 `design/multi-window-protocol-v3.zh.md`）。
+- [ ] M5 剩余：桌面 Electron 端到端人工验收矩阵（`doc/acceptance/build-and-package.zh.md` §1.7）、浮动 dock 拖拽、光标形状反馈。
 
 实施里程碑（原始计划）
 

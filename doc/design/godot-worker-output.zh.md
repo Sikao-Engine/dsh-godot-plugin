@@ -44,7 +44,7 @@
 
 - 注册名 `dsh`，仅在 `DSH_VIEWPORT_ENABLED` 构建中注册（`register_dsh_driver()`，由 `os_windows.cpp` 调用）；永远排在 headless 之前。
 - `create_func`：创建 `RenderingContextDriverVulkanWindows` → `surface_create_dsh(worker)` → `window_create_from_surface(MAIN, surface)` → `RenderingDevice::initialize(context, MAIN)`（有 main surface，正常多帧并行度）→ `screen_create(MAIN)` → `RendererCompositorRD::make_current()`（否则 RS init 时空函数指针崩溃——上游各平台 DS 均负责此调用）→ 主窗口初始尺寸 0（**挂起**，等 broker resize）。
-- 虚拟窗口：主窗口 + 自增子窗口 ID；`window_set_size` 三件事——存尺寸、`rendering_context->window_set_size`（surface needs_resize）、`rect_changed_callback`（驱动 SceneTree 视口尺寸与 attach-to-screen），与 `DisplayServerWindows` 的 WM_SIZE 职责一致。
+- 窗口：主窗口 + 自增子窗口 ID；`window_set_size` 三件事——存尺寸、`rendering_context->window_set_size`（surface needs_resize）、`rect_changed_callback`（驱动 SceneTree 视口尺寸与 attach-to-screen），与 `DisplayServerWindows` 的 WM_SIZE 职责一致。**多窗口（协议 v2.1）已实施**：子窗口获得独立 headless surface + 独立 2 槽帧环（`dsh_window_sink.*`）+ `godot.window.v1` 生命周期事件；`has_feature(FEATURE_SUBWINDOWS)` 返回真值，DSH 构建中 `embed_subwindows` 默认 false。详见 `multi-window-protocol-v3.zh.md`。
 - `can_any_window_draw()` = worker 已应用非零 broker resize 且主窗口可画；`process_events()` = `worker->poll()` + 输入 flush。
 - 输入分发：构造时 `Input::set_event_dispatch_function`，按窗口回调路由（与 headless 相同模式）。
 
@@ -91,5 +91,5 @@ SCons 新增 `dsh_viewport=yes`（默认关）：仅 `platform=windows arch=x86_
 - 每生产者单挂载、4 槽、2048×2048、Windows x64 / Electron 44.7.0 ——协议 2 既定配额。
 - 引擎错误信息（如脚本缓存缺失）走 stderr，broker 以诊断事件显示，不污染协议。
 - 停止序列依赖 broker：stop + stdin EOF → 主循环当帧退出 → 清理 → `stopped` → 退出码 0；3s 看门狗内可完成（实测远小于）。
-- **Editor 模式**（2026-10-25 构建验证通过）：同一份重构承载 Godot editor。要点：editor 是 `Main::start` 的 EditorNode 分支（普通 SceneTree payload）；`has_feature(FEATURE_SUBWINDOWS)=false` 使子窗口自动内嵌（`window.cpp:3382`），叠加 editor `single_window_mode` 后单虚拟窗口即可；DS 必须创建 `NativeMenu` 单例（EditorNode 菜单初始化无条件查询）；`OS_Windows::alert` 在 worker 模式转 stderr（原生消息框会挂起隐藏进程）；editor 按需重绘（hover 不触发），隐藏经 `can_any_window_draw` 完全停帧；`target=editor` 的 `main.cpp` 不得包含平台 worker 头文件（windows.h 宏污染 editor GUI 头），`Main::iteration` 经 `DSHViewportMode::worker_stop_check` 函数指针轮询。`godot:verify:editor` 全绿（滚轮驱动 12 帧、inputSeq 47、隐藏停帧、epoch 推进、干净停止）。
-- 后续里程碑：worker 运行真实工程场景（producer args 已预留 `--path` 等 32 个槽位）、`godot.editor.v1` 命名空间（含文本输入/IME 承载）、DirectX 兜底、第二引擎复用验证。
+- **Editor 模式**（2026-10-25 构建验证通过）：同一份重构承载 Godot editor。要点：editor 是 `Main::start` 的 EditorNode 分支（普通 SceneTree payload）；多窗口（协议 v2.1）已实施：editor 的弹窗/对话框成为真子窗口（独立 surface/帧环/客户端图层），FBX 导入预览与 Game tab 可用；`has_feature(FEATURE_WINDOW_EMBEDDING)` 在 editor stage 为真，游戏经第二个 broker session 呈现（`EmbeddedProcessDSH`）；DS 必须创建 `NativeMenu` 单例（EditorNode 菜单初始化无条件查询）；`OS_Windows::alert` 在 worker 模式转 stderr（原生消息框会挂起隐藏进程）；editor 按需重绘（hover 不触发），隐藏经 `can_any_window_draw` 完全停帧；`target=editor` 的 `main.cpp` 不得包含平台 worker 头文件（windows.h 宏污染 editor GUI 头），`Main::iteration` 经 `DSHViewportMode::worker_stop_check` 函数指针轮询。`godot:verify:editor` 全绿（滚轮驱动 12 帧、inputSeq 47、隐藏停帧、epoch 推进、干净停止）。
+- 后续里程碑：worker 运行真实工程场景（producer args 已预留 `--path` 等 32 个槽位）、DirectX 兜底、第二引擎复用验证。`godot.editor.v1` 与 `godot.window.v1` 命名空间已落地（多窗口协议 v2.1，见 `multi-window-protocol-v3.zh.md`）。

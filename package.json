@@ -22,8 +22,13 @@
     "cordis.patch.yml",
     "locale",
     "native/win32-x64/dsh-godot-worker.exe",
-    "native/editor-project",
-    "runtime-manifest.json"
+    "native/win32-x64/dsh-godot-editor.exe",
+    "native/editor-project/project.godot",
+    "native/editor-project/*.tscn",
+    "runtime-manifest.json",
+    "runtime-manifest.editor.json",
+    "godot/LICENSE.txt",
+    "godot/COPYRIGHT.txt"
   ],
   "engines": {
     "node": ">=24.9.0",
@@ -53,7 +58,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "release:stage": "pnpm run build && node scripts/godot.mjs stage",
+    "release:stage": "pnpm run build && node scripts/godot.mjs stage && node scripts/godot.mjs stage --editor",
     "release:pack": "pnpm run release:stage && node scripts/publish.mjs pack",
     "release:publish": "node scripts/publish.mjs all",
     "typecheck": "tsc -p tsconfig.json --noEmit",

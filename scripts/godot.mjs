@@ -9,7 +9,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -38,10 +38,8 @@ const git = (...args) => run('git', ['-C', godotDir, ...args])
 const json = file => JSON.parse(readFileSync(file, 'utf8'))
 
 function sconsCommand() {
-  const probe = spawnSync('python', ['-m', 'scons', '--version'], { encoding: 'utf8' })
-  if (!probe.error && probe.status === 0) return { command: 'python', args: ['-m', 'scons'] }
-  // The pip layout puts a scons.exe next to the Python interpreter instead
-  // of an importable __main__ module.
+  const probe = spawnSync('python', ['-m', 'SCons', '--version'], { encoding: 'utf8' })
+  if (!probe.error && probe.status === 0) return { command: 'python', args: ['-m', 'SCons'] }
   const prefix = spawnSync('python', ['-c', 'import sys, os; print(os.path.join(os.path.dirname(sys.executable), "Scripts"))'], { encoding: 'utf8' })
   if (!prefix.error && prefix.status === 0) {
     const candidate = join(prefix.stdout.trim(), 'scons.exe')
@@ -100,7 +98,7 @@ function stage() {
     backend: 'godot-vulkan',
     producer: editorMode ? 'dsh-godot-plugin/godot-editor' : 'dsh-godot-plugin/godot',
     worker: `native/win32-x64/${stagedName}`,
-    extensions: ['godot.demo.v1', 'godot.viewport.v1'],
+    extensions: ['godot.demo.v1', 'godot.viewport.v1', 'godot.window.v1', 'godot.editor.v1'],
     electron: '44.7.0',
     dsh: pluginPkg.engines.dsh,
     requiredCapability: 'dshDesktop.nativeViewports/v2 (experimental fork)',
@@ -179,16 +177,67 @@ async function verify() {
   const rl = createInterface({ input: child.stdout })
   const pendingLines = []
   let lineWaiter = null
+  // Protocol v2.1 sub-window traffic is routed to dedicated queues so the
+  // main-stream frame/surface assertions below never see a window-tagged
+  // message (and vice versa).
+  const windowFrameLines = []
+  const windowSurfaceLines = []
   rl.on('line', line => {
     if (process.env.DSH_VERIFY_DEBUG) console.log(`[verify:line] ${line}`)
-    if (lineWaiter) { lineWaiter(line); lineWaiter = null } else pendingLines.push(line)
+    let message = null
+    try { message = JSON.parse(line) } catch { message = null }
+    if (message?.type === 'frame' && (message.window ?? 0) !== 0) { windowFrameLines.push(line); return }
+    if (message?.type === 'surface' && (message.window ?? 0) !== 0) { windowSurfaceLines.push(line); return }
+    if (lineWaiter) {
+      const receive = lineWaiter
+      lineWaiter = null
+      receive(line)
+    } else pendingLines.push(line)
   })
   const nextLine = (timeoutMs = 15000) => {
     if (pendingLines.length) return Promise.resolve(pendingLines.shift())
     return new Promise((resolveLine, reject) => {
-      const timer = setTimeout(() => reject(new Error('Timed out waiting for a protocol line')), timeoutMs)
-      lineWaiter = line => { clearTimeout(timer); resolveLine(line) }
+      const receive = line => { clearTimeout(timer); resolveLine(line) }
+      const timer = setTimeout(() => {
+        if (lineWaiter === receive) lineWaiter = null
+        reject(new Error('Timed out waiting for a protocol line'))
+      }, timeoutMs)
+      lineWaiter = receive
     })
+  }
+  const nextWindowFrame = async (window, timeoutMs = 20000) => {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const index = windowFrameLines.findIndex(raw => (JSON.parse(raw).window ?? 0) === window)
+      if (index >= 0) return JSON.parse(windowFrameLines.splice(index, 1)[0])
+      for (let i = pendingLines.length - 1; i >= 0; i--) {
+        const message = JSON.parse(pendingLines[i])
+        if (message.type === 'frame') { releaseFrame(message); pendingLines.splice(i, 1) }
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for a window ${window} frame`)
+      await new Promise(resolveWait => setTimeout(resolveWait, 100))
+    }
+  }
+  const nextWindowSurface = async (window, timeoutMs = 20000) => {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const index = windowSurfaceLines.findIndex(raw => (JSON.parse(raw).window ?? 0) === window)
+      if (index >= 0) return JSON.parse(windowSurfaceLines.splice(index, 1)[0])
+      for (let i = windowFrameLines.length - 1; i >= 0; i--) {
+        const frame = JSON.parse(windowFrameLines[i])
+        if (frame.window === window) {
+          send({ kind: 'release', epoch: frame.epoch, slot: frame.slot, frameId: frame.frameId, window })
+          windowFrameLines.splice(i, 1)
+          report.metrics.released++
+        }
+      }
+      for (let i = pendingLines.length - 1; i >= 0; i--) {
+        const message = JSON.parse(pendingLines[i])
+        if (message.type === 'frame') { releaseFrame(message); pendingLines.splice(i, 1) }
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for a window ${window} surface`)
+      await new Promise(resolveWait => setTimeout(resolveWait, 100))
+    }
   }
   const send = message => child.stdin.write(JSON.stringify(message) + '\n')
   let seq = 0 // Shared input/extension sequence across steps (the worker drops stale seqs).
@@ -500,6 +549,138 @@ async function verify() {
     if (frame.width !== secondSize.width || frame.height !== secondSize.height) throw new Error(`Frame after resize has stale size: ${JSON.stringify(frame)}`)
     send({ kind: 'release', epoch: frame.epoch, slot: frame.slot, frameId: frame.frameId })
     report.metrics.frames++
+  })
+
+  await step('multiWindow', async () => {
+    // Protocol v2.1: a real sub-window gets its own surface receipt, frame
+    // ring (2 slots), lifecycle events and window-tagged input routing. The
+    // demo stage exposes openPopup/closePopup hooks for exactly this flow.
+    const input = event => send({ kind: 'input', seq: ++seq, event })
+    // godot.window.v1 events travel the main stream; wait for one by name.
+    const windowEvents = []
+    const nextWindowEvent = async (name, timeoutMs = 20000) => {
+      const deadline = Date.now() + timeoutMs
+      for (;;) {
+        const index = windowEvents.findIndex(event => event.name === name)
+        if (index >= 0) return windowEvents.splice(index, 1)[0]
+        if (Date.now() >= deadline) throw new Error(`Timed out waiting for godot.window.v1/${name}`)
+        const line = JSON.parse(await nextLine(Math.max(100, deadline - Date.now())))
+        if (line.type === 'extension' && line.namespace === 'godot.window.v1') { windowEvents.push(line); continue }
+        if (line.type === 'frame') { releaseFrame(line); continue }
+        if (line.type === 'surface') { report.metrics.surfaces++; continue }
+        if (line.type === 'stats') continue
+        throw new Error(`Unexpected message while waiting for a window event: ${JSON.stringify(line)}`)
+      }
+    }
+
+    send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'openPopup', payload: { width: 160, height: 120, color: '#22cc88' } })
+    const created = await nextWindowEvent('created')
+    const window = created.payload?.window
+    if (!Number.isInteger(window) || window < 1 || window > 15) throw new Error(`Bad created window id: ${JSON.stringify(created)}`)
+
+    send({ kind: 'input', seq: ++seq, event: { type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: 20, y: 20, buttons: 0, button: -1, modifiers: 0, window } })
+    const surface = await nextWindowSurface(window)
+    if (surface.slots !== 2) throw new Error(`Sub-window ring must announce 2 slots: ${JSON.stringify(surface)}`)
+    if (surface.width < 16 || surface.height < 16) throw new Error(`Bad sub-window surface size: ${JSON.stringify(surface)}`)
+    report.metrics.surfaces++
+
+    const rectEvent = await nextWindowEvent('rect')
+    const rect = rectEvent.payload?.rect
+    if (!rect || rect.width < 16 || rect.height < 16) throw new Error(`Bad sub-window rect: ${JSON.stringify(rectEvent)}`)
+
+    const frame = await nextWindowFrame(window)
+    if ((frame.window ?? 0) !== window) throw new Error(`Frame window mismatch: ${JSON.stringify(frame)}`)
+    if (frame.width !== surface.width || frame.height !== surface.height) throw new Error(`Frame/surface size mismatch: ${JSON.stringify(frame)}`)
+    send({ kind: 'release', epoch: frame.epoch, slot: frame.slot, frameId: frame.frameId, window })
+    report.metrics.released++
+
+    // Window-tagged focus control: the popup takes keyboard focus, reported
+    // back both through the focus event and the demo query state.
+    input({ type: 'focus', focused: true, window })
+    const focusEvent = await nextWindowEvent('focus')
+    if (focusEvent.payload?.window !== window || focusEvent.payload?.focused !== true) throw new Error(`Bad focus event: ${JSON.stringify(focusEvent)}`)
+    const queryState = async () => {
+      send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'query', payload: null })
+      const event = await nextExtensionEvent('state')
+      return event.payload
+    }
+    if (!editorMode) {
+      const state = await queryState()
+      const entry = (state.windows ?? []).find(candidate => candidate.window === window)
+      if (!entry) throw new Error(`Sub-window missing from the demo query: ${JSON.stringify(state)}`)
+      if (!entry.focused) throw new Error(`Sub-window did not take focus: ${JSON.stringify(state)}`)
+    }
+
+    for (let i = windowFrameLines.length - 1; i >= 0; i--) {
+      const queued = JSON.parse(windowFrameLines[i])
+      if (queued.window === window) {
+        send({ kind: 'release', epoch: queued.epoch, slot: queued.slot, frameId: queued.frameId, window })
+        windowFrameLines.splice(i, 1)
+      }
+    }
+    send({ kind: 'resize', window, width: 192, height: 144, scale: 1 })
+    const resized = await nextWindowSurface(window)
+    if (resized.epoch <= surface.epoch || resized.width !== 192 || resized.height !== 144) {
+      throw new Error(`Bad resized sub-window surface: ${JSON.stringify(resized)}`)
+    }
+    const resizedFrame = await nextWindowFrame(window)
+    if (resizedFrame.epoch !== resized.epoch) throw new Error(`Stale sub-window frame after resize: ${JSON.stringify(resizedFrame)}`)
+    send({ kind: 'release', epoch: resizedFrame.epoch, slot: resizedFrame.slot, frameId: resizedFrame.frameId, window })
+    report.metrics.released++
+    send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'closePopup', payload: null })
+    const destroyed = await nextWindowEvent('destroyed')
+    if (destroyed.payload?.window !== window) throw new Error(`Bad destroyed event: ${JSON.stringify(destroyed)}`)
+    return { window, rect }
+  })
+
+  await step('gameTab', async () => {
+    // Phase 5.1: GameView state machine on the wire. The editor stage exposes a
+    // debugGame hook (godot.editor.v1) that drives the same emit paths as
+    // EmbeddedProcessDSH (spawnGame/gameRect/gameClose) without a Play session,
+    // and echoes the client gameLifecycle report back as gameDebug so the full
+    // round trip is observable by the fake broker.
+    if (!editorMode) return { skipped: 'debugGame hook is only exercised against the editor stage' }
+    const editorEvents = []
+    const nextEditorEvent = async (name, timeoutMs = 20000) => {
+      const deadline = Date.now() + timeoutMs
+      for (;;) {
+        const index = editorEvents.findIndex(event => event.name === name)
+        if (index >= 0) return editorEvents.splice(index, 1)[0]
+        if (Date.now() >= deadline) throw new Error(`Timed out waiting for godot.editor.v1/${name}`)
+        const line = JSON.parse(await nextLine(Math.max(100, deadline - Date.now())))
+        if (line.type === 'extension' && line.namespace === 'godot.editor.v1') { editorEvents.push(line); continue }
+        if (line.type === 'frame') { releaseFrame(line); continue }
+        if (line.type === 'surface') { report.metrics.surfaces++; continue }
+        if (line.type === 'stats') continue
+        throw new Error(`Unexpected message while waiting for an editor event: ${JSON.stringify(line)}`)
+      }
+    }
+    const debugGame = payload => send({ kind: 'extension', seq: ++seq, namespace: 'godot.editor.v1', name: 'debugGame', payload })
+    const lifecycle = (running, code = 0) => send({ kind: 'extension', seq: ++seq, namespace: 'godot.editor.v1', name: 'gameLifecycle', payload: { running, code } })
+    // Play: the editor asks the client to spawn the game worker session.
+    const startRect = { x: 40, y: 30, width: 320, height: 200 }
+    debugGame({ phase: 'start', rect: startRect })
+    const spawned = await nextEditorEvent('spawnGame')
+    const args = spawned.payload?.args
+    if (!Array.isArray(args) || args.length < 1 || !args.every(arg => typeof arg === 'string')) throw new Error(`Bad spawnGame args: ${JSON.stringify(spawned)}`)
+    const spawnRect = spawned.payload?.rect
+    if (!spawnRect || spawnRect.x !== startRect.x || spawnRect.y !== startRect.y || spawnRect.width !== startRect.width || spawnRect.height !== startRect.height) throw new Error(`Bad spawnGame rect: ${JSON.stringify(spawned)}`)
+    // The client reports the game session live; the debug listener echoes it back.
+    lifecycle(true)
+    const live = await nextEditorEvent('gameDebug')
+    if (live.payload?.running !== true) throw new Error(`Bad gameDebug live event: ${JSON.stringify(live)}`)
+    // Rect follow: a GameView size change re-emits gameRect with the new rect.
+    const followRect = { x: 44, y: 33, width: 400, height: 260 }
+    debugGame({ phase: 'rect', rect: followRect })
+    const moved = await nextEditorEvent('gameRect')
+    if (moved.payload?.rect?.x !== followRect.x || moved.payload?.rect?.y !== followRect.y || moved.payload?.rect?.width !== followRect.width || moved.payload?.rect?.height !== followRect.height) throw new Error(`Bad gameRect follow event: ${JSON.stringify(moved)}`)
+    // Stop: gameClose goes to the client, which disposes the session and reports exit.
+    debugGame({ phase: 'stop' })
+    await nextEditorEvent('gameClose')
+    lifecycle(false, 0)
+    const dead = await nextEditorEvent('gameDebug')
+    if (dead.payload?.running !== false || dead.payload?.code !== 0) throw new Error(`Bad gameDebug exit event: ${JSON.stringify(dead)}`)
+    return { spawnArgs: args.length, followed: true }
   })
 
   await step('stop', async () => {

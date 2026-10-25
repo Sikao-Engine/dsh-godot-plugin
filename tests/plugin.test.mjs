@@ -11,6 +11,12 @@ test('bundle points to the public plugin entry', async () => {
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.equal(manifest.name, 'dsh-godot-plugin')
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
+  assert.ok(manifest.files.includes('native/win32-x64/dsh-godot-editor.exe'))
+  assert.ok(manifest.files.includes('runtime-manifest.editor.json'))
+  assert.ok(manifest.files.includes('godot/LICENSE.txt'))
+  assert.ok(manifest.files.includes('godot/COPYRIGHT.txt'))
+  assert.ok(!manifest.files.includes('native/editor-project'))
+  assert.ok(manifest.files.includes('native/editor-project/project.godot'))
   assert.match(patch, /name: dsh-godot-plugin/)
 })
 
@@ -57,9 +63,12 @@ test('Cordis mounts, disposes and remounts the worker service', async () => {
       assert.equal(status.plugin, 'dsh-godot-plugin')
       assert.equal(status.phase, 'worker')
       // The status must honestly reflect which worker manifests are staged.
-      const manifests = existsSync(new URL('../runtime-manifest.json', import.meta.url)) ? 1 : 0
-      assert.equal(status.runtimeEmbedded, manifests > 0)
-      assert.deepEqual(status.producers.slice(0, 1), manifests ? ['dsh-godot-plugin/godot'] : [])
+      const producers = [
+        ['runtime-manifest.json', 'dsh-godot-plugin/godot'],
+        ['runtime-manifest.editor.json', 'dsh-godot-plugin/godot-editor'],
+      ].filter(([file]) => existsSync(new URL(`../${file}`, import.meta.url))).map(([, id]) => id)
+      assert.equal(status.runtimeEmbedded, producers.length > 0)
+      assert.deepEqual(status.producers, producers)
       await fiber.dispose()
       assert.equal(ctx.get('godotIntegration'), undefined)
     }
@@ -75,8 +84,8 @@ test('staged runtime manifest matches the Godot worker contract', async () => {
   assert.equal(manifest.protocol, 2)
   assert.equal(manifest.producer, 'dsh-godot-plugin/godot')
   assert.equal(manifest.executable, 'native/win32-x64/dsh-godot-worker.exe')
-  assert.deepEqual(manifest.extensions, ['godot.demo.v1', 'godot.viewport.v1'])
-  assert.match(manifest.files['native/win32-x64/dsh-godot-worker.exe'], /^[a-f0-9]{64}$/)
+    assert.deepEqual(manifest.extensions, ['godot.demo.v1', 'godot.viewport.v1', 'godot.window.v1', 'godot.editor.v1'])
+    assert.match(manifest.files['native/win32-x64/dsh-godot-worker.exe'], /^[a-f0-9]{64}$/)
 })
 
 test('staged editor manifest matches the editor worker contract', async () => {
@@ -86,7 +95,8 @@ test('staged editor manifest matches the editor worker contract', async () => {
   assert.equal(manifest.protocol, 2)
   assert.equal(manifest.producer, 'dsh-godot-plugin/godot-editor')
   assert.equal(manifest.executable, 'native/win32-x64/dsh-godot-editor.exe')
-  assert.equal(manifest.editorMode, true)
-  assert.equal(manifest.projectDir, 'native/editor-project')
-  assert.match(manifest.files['native/win32-x64/dsh-godot-editor.exe'], /^[a-f0-9]{64}$/)
+    assert.equal(manifest.editorMode, true)
+    assert.equal(manifest.projectDir, 'native/editor-project')
+    assert.deepEqual(manifest.extensions, ['godot.demo.v1', 'godot.viewport.v1', 'godot.window.v1', 'godot.editor.v1'])
+    assert.match(manifest.files['native/win32-x64/dsh-godot-editor.exe'], /^[a-f0-9]{64}$/)
 })

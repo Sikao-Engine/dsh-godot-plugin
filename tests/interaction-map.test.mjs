@@ -7,10 +7,57 @@ import {
   computeResize,
   createResizeScheduler,
   engineMapFactors,
+  engineRectToLayerCss,
   hasFeature,
   mapCssToPhysical,
+  reduceWindowEvent,
   transientRemap,
 } from '../src/interaction-map.mjs'
+
+test('engineRectToLayerCss converts virtual-screen physical px to layer CSS px', () => {
+  // Main window at origin, DPR-like factors 2: a popup at (400, 300) sized 320x240
+  // physical lands at (200, 150) sized 160x120 CSS.
+  const layer = engineRectToLayerCss({ x: 400, y: 300, width: 320, height: 240 }, { x: 0, y: 0 }, { mapScaleX: 2, mapScaleY: 2 })
+  assert.deepEqual(layer, { x: 200, y: 150, width: 160, height: 120 })
+  // Per-axis factors follow the main-window resize (interaction.map.v2).
+  const aniso = engineRectToLayerCss({ x: 100, y: 100, width: 100, height: 100 }, { x: 0, y: 0 }, { mapScaleX: 2, mapScaleY: 4 })
+  assert.deepEqual(aniso, { x: 50, y: 25, width: 50, height: 25 })
+  // A non-origin main window shifts every layer (the wrap is relative to it).
+  const shifted = engineRectToLayerCss({ x: 400, y: 300, width: 320, height: 240 }, { x: 200, y: 100 }, { mapScaleX: 2, mapScaleY: 2 })
+  assert.deepEqual(shifted, { x: 100, y: 100, width: 160, height: 120 })
+  // Degenerate factors never produce NaN geometry.
+  const safe = engineRectToLayerCss({ x: 10, y: 10, width: 10, height: 10 }, null, null)
+  assert.deepEqual(safe, { x: 10, y: 10, width: 10, height: 10 })
+})
+
+test('reduceWindowEvent tracks the layer lifecycle without mutating', () => {
+  const rect = { x: 0, y: 0, width: 100, height: 80 }
+  let layers = new Map()
+  layers = reduceWindowEvent(layers, 'rect', { window: 3, rect }) // ignored: no created yet
+  assert.equal(layers.size, 0)
+  layers = reduceWindowEvent(layers, 'created', { window: 3, rect, z: 1 })
+  assert.equal(layers.size, 1)
+  assert.equal(layers.get(3).visible, false)
+  assert.equal(layers.get(3).z, 1)
+  const before = layers
+  layers = reduceWindowEvent(layers, 'rect', { window: 3, rect: { x: 5, y: 6, width: 7, height: 8 } })
+  assert.equal(before.get(3).rect.width, 100) // immutability
+  assert.equal(layers.get(3).rect.width, 7)
+  layers = reduceWindowEvent(layers, 'visibility', { window: 3, visible: true })
+  assert.equal(layers.get(3).visible, true)
+  layers = reduceWindowEvent(layers, 'focus', { window: 3, focused: true })
+  assert.equal(layers.get(3).focused, true)
+  layers = reduceWindowEvent(layers, 'raised', { window: 3, z: 9 })
+  assert.equal(layers.get(3).z, 9)
+  layers = reduceWindowEvent(layers, 'title', { window: 3, title: 'Advanced Import' })
+  assert.equal(layers.get(3).title, 'Advanced Import')
+  layers = reduceWindowEvent(layers, 'destroyed', { window: 3 })
+  assert.equal(layers.size, 0)
+  // Out-of-range ids never enter the map.
+  layers = reduceWindowEvent(layers, 'created', { window: 16, rect })
+  layers = reduceWindowEvent(layers, 'created', { window: -1, rect })
+  assert.equal(layers.size, 0)
+})
 
 test('clampScale caps at the device DPR and the 2048 physical quota', () => {
   assert.equal(clampScale(800, 600, 2), 2)
@@ -90,7 +137,7 @@ function makeTimers() {
   let nextId = 1
   return {
     now: () => now,
-    advance(ms) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn() } },
+    advance(ms) { now += ms; for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn() } },
     setTimer(fn, ms) { const id = nextId++; timers.set(id, { at: now + ms, fn }); return id },
     clearTimer(id) { timers.delete(id) },
   }

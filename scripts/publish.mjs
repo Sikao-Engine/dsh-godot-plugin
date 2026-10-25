@@ -9,7 +9,7 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -48,7 +48,8 @@ function runNpm(args, options = {}) {
 const log = message => console.log(`[publish] ${message}`)
 
 function ensureReleaseReady() {
-  for (const required of ['lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'runtime-manifest.json', join('native/win32-x64', 'dsh-godot-worker.exe')]) {
+  for (const required of ['lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'runtime-manifest.json', 'runtime-manifest.editor.json',
+    join('native/win32-x64', 'dsh-godot-worker.exe'), join('native/win32-x64', 'dsh-godot-editor.exe')]) {
     if (!existsSync(join(root, required))) throw new Error(`Missing ${required}. Run: pnpm run release:stage`)
   }
   const devLinks = Object.entries(pkg.devDependencies ?? {}).filter(([, version]) => String(version).startsWith('link:'))
@@ -77,17 +78,20 @@ function statSyncSafe(path) { return existsSync(path) ? readFileSync(path).byteL
 function publishNpm() {
   const staging = mkdtempSync(join(tmpdir(), 'dsh-godot-plugin-publish-'))
   try {
-    for (const entry of ['lib', 'locale', 'cordis.patch.yml', 'runtime-manifest.json', 'README.md', 'native/editor-project']) {
-      cpSync(join(root, entry), join(staging, entry), { recursive: true })
+    for (const entry of ['lib', 'locale', 'cordis.patch.yml', 'runtime-manifest.json', 'runtime-manifest.editor.json', 'README.md', 'native/editor-project']) {
+      cpSync(join(root, entry), join(staging, entry), { recursive: true,
+        filter: source => !source.split(/[\\/]/u).includes('.godot') })
     }
-    // The editor worker is a development artifact (131 MiB); it stays out of
-    // the published package until the product decision is made.
+    mkdirSync(join(staging, 'godot'), { recursive: true })
+    for (const name of ['LICENSE.txt', 'COPYRIGHT.txt']) cpSync(join(root, 'godot', name), join(staging, 'godot', name))
     mkdirSync(join(staging, 'native/win32-x64'), { recursive: true })
-    cpSync(join(root, 'native/win32-x64/dsh-godot-worker.exe'), join(staging, 'native/win32-x64/dsh-godot-worker.exe'))
+    for (const name of ['dsh-godot-worker.exe', 'dsh-godot-editor.exe']) {
+      cpSync(join(root, 'native/win32-x64', name), join(staging, 'native/win32-x64', name))
+    }
     const publishPkg = { ...pkg }
     delete publishPkg.devDependencies // never ship local link: dependencies
     delete publishPkg.scripts // build scripts are irrelevant to consumers
-    publishPkg.files = ['lib', 'cordis.patch.yml', 'locale', 'native/win32-x64/dsh-godot-worker.exe', 'native/editor-project', 'runtime-manifest.json']
+    publishPkg.files = pkg.files
     writeFileSync(join(staging, 'package.json'), JSON.stringify(publishPkg, null, 2) + '\n')
     writeFileSync(join(staging, '.npmignore'), '')
     log(`publishing ${pkg.name}@${pkg.version} to npm ${npmTag ? `with tag '${npmTag}' ` : ''}(registry: ${process.env.npm_config_registry ?? 'https://registry.npmjs.org'})…`)

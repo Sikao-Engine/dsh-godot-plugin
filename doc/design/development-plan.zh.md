@@ -14,7 +14,6 @@
 - 禁止用 HWND 子窗口直显、CPU 像素流、软件渲染冒充成功；后端切到 DirectX 不改变该显示要求。
 - GPU 内部 copy/blit 允许，必须明确记录次数。“GPU 无回读”不等于所有阶段都零 GPU copy。
 - 第一阶段不改 Godot，先用小型 C++ Graphics 101 控制变量；先证明图形互操作，再证明 DSH 插件安装发行，最后修改 Godot。
-- 当前 DSH 本地 checkout 为 `0.2.1-rc.3`，Electron 依赖为 `44.7.0`；基线测试使用准确版本和源码 commit，不依赖 `^` 自动更新。
 - 当前 Godot checkout 的 `version.py` 声明 `4.6.3-rc`；正式实施前记录 commit 与实际构建版本，不能仅凭版本文件称其为稳定发行版。
 
 Vulkan 有利于 Godot 后端和未来平台复用，但 **Electron Desktop 并不是移动端容器**。移动端将复用 Godot 项目、原生渲染与控制协议，显示宿主和资源句柄传递另行实现；iOS 等平台不能假定原生 Vulkan 可用。

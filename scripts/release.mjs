@@ -15,7 +15,7 @@ for (const file of files) {
 }
 const commit = directory => execFileSync('git', ['-C', directory, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
 writeFileSync(resolve(root, 'runtime-manifest.json'), JSON.stringify({
-  protocol: 2, platform: 'win32-x64', backend: 'vulkan', electron: '44.7.0', dsh: '0.2.1-rc.3',
+  protocol: 2, platform: 'win32-x64', backend: 'vulkan', electron: '44.7.0', dsh: '0.2.1-dev.2',
   requiredCapability: 'dshDesktop.nativeViewports/v2 (experimental fork)', executable: 'native/win32-x64/graphics101.exe',
   runtimeCpuReadbacks: 0, exportGpuCopies: 0, pluginCommit: commit(root), dshCommit: commit(source),
   toolchain: JSON.parse(readFileSync(resolve(root, 'native/graphics101/build/build-toolchain.json'), 'utf8')),

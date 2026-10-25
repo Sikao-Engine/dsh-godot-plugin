@@ -10,7 +10,7 @@
 | 运行时清单 | `runtime-manifest.json` | producer id、扩展、SHA-256、工具链、需求（stage 时重新生成） |
 | 插件 JS | `lib/` | Cordis 服务（注册 producer）+ 客户端视口面板 |
 
-限定：Windows x64 / Electron 44.7.0 / DSH `0.2.1-rc.3` 原生视口预览 fork（协议 2）。扩展命名空间 `godot.demo.v1`。
+限定：Windows x64 / Electron 44.7.0 / DSH 原生视口预览 fork（协议 2）。扩展命名空间 `godot.demo.v1`。
 
 ## 1. 构建方法（开发机）
 

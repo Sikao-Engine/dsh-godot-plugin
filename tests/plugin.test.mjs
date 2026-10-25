@@ -27,6 +27,26 @@ test('built client registers a usable plugin factory', async () => {
   assert.deepEqual(Array.from(client.inject), ['slots', 'locale', 'sidebarRightTabs'])
 })
 
+test('built client carries the interaction protocol v2 behavior', async () => {
+  const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Coordinate mapping v2: resize carries per-axis css geometry ...
+  assert.match(source, /cssWidth/)
+  assert.match(source, /cssHeight/)
+  // ... gated on the negotiated capability (graphics101 fallback).
+  assert.match(source, /interaction\.map\.v2/)
+  // Host gesture suppression: the viewport keeps right/middle drags to itself.
+  assert.match(source, /user-select:\s*none/)
+  assert.match(source, /contextmenu/)
+  assert.match(source, /selectstart/)
+  // Text/IME pipeline and pointer lock deltas ride the input channel.
+  assert.match(source, /compositionstart/)
+  assert.match(source, /imeState/)
+  assert.match(source, /type:\s*['"]drop['"]/)
+  assert.match(source, /movementX/)
+  // The demo button semantics are documented in the shipped help text.
+  assert.match(source, /WASD \/ QE/)
+})
+
 test('Cordis mounts, disposes and remounts the worker service', async () => {
   const ctx = new Context()
   try {
@@ -55,7 +75,7 @@ test('staged runtime manifest matches the Godot worker contract', async () => {
   assert.equal(manifest.protocol, 2)
   assert.equal(manifest.producer, 'dsh-godot-plugin/godot')
   assert.equal(manifest.executable, 'native/win32-x64/dsh-godot-worker.exe')
-  assert.deepEqual(manifest.extensions, ['godot.demo.v1'])
+  assert.deepEqual(manifest.extensions, ['godot.demo.v1', 'godot.viewport.v1'])
   assert.match(manifest.files['native/win32-x64/dsh-godot-worker.exe'], /^[a-f0-9]{64}$/)
 })
 

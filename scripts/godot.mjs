@@ -100,7 +100,7 @@ function stage() {
     backend: 'godot-vulkan',
     producer: editorMode ? 'dsh-godot-plugin/godot-editor' : 'dsh-godot-plugin/godot',
     worker: `native/win32-x64/${stagedName}`,
-    extensions: ['godot.demo.v1'],
+    extensions: ['godot.demo.v1', 'godot.viewport.v1'],
     electron: '44.7.0',
     dsh: pluginPkg.engines.dsh,
     requiredCapability: 'dshDesktop.nativeViewports/v2 (experimental fork)',
@@ -123,7 +123,10 @@ function stage() {
       'Vulkan driver with D3D11_TEXTURE external memory import',
       'Vulkan loader supplied by GPU driver',
       'DSH native viewport preview fork (protocol 2, Windows x64, Electron 44.7.0)',
-      ...(editorMode ? ['Text input/IME and clipboard ride-along not yet provided (long-tail)'] : []),
+      ...(editorMode ? [
+        'Text input/IME provided through protocol v2 input.text/input.ime (composition preedit + commit)',
+        'Clipboard ride-along not yet provided (long-tail)',
+      ] : []),
     ],
     files: { [`native/win32-x64/${stagedName}`]: hash },
   }
@@ -156,6 +159,10 @@ async function verify() {
   const budget = editorMode ? { hello: 20000, surface: 90000, frame: 60000, frames: 12 } : { hello: 15000, surface: 20000, frame: 15000, frames: 40 }
   const size = editorMode ? { width: 960, height: 600 } : { width: 320, height: 240 }
   const secondSize = editorMode ? { width: 720, height: 480 } : { width: 200, height: 150 }
+  // The resize sends cssWidth/cssHeight = 2x physical (factors 0.5): aim input
+  // at the physical center expressed in css coordinates so editor hover/wheel
+  // land on the 3D viewport and drive demand redraws.
+  const aim = editorMode ? { x: size.width, y: size.height } : { x: 480, y: 300 }
 
   const report = { timestamp: new Date().toISOString(), worker, steps: {}, metrics: { frames: 0, released: 0, surfaces: 0, maxInputSeq: 0 } }
   let failed = false
@@ -185,15 +192,44 @@ async function verify() {
   }
   const send = message => child.stdin.write(JSON.stringify(message) + '\n')
   let seq = 0 // Shared input/extension sequence across steps (the worker drops stale seqs).
+  const extensionEvents = [] // Worker extension events (demo state replies) seen at any point.
   const expectFrame = async (timeoutMs = budget.frame) => {
     const deadline = Date.now() + timeoutMs
     for (;;) {
       const line = await nextLine(deadline - Date.now())
       const message = JSON.parse(line)
       if (message.type === 'frame') return message
+      if (message.type === 'extension') { extensionEvents.push(message); continue }
       if (message.type === 'stats') continue
       if (message.type === 'surface') { report.metrics.surfaces++; pendingLines.unshift(line); return expectFrame(deadline - Date.now()) }
       throw new Error(`Unexpected protocol message while waiting for a frame: ${line}`)
+    }
+  }
+  const releaseFrame = frame => { send({ kind: 'release', epoch: frame.epoch, slot: frame.slot, frameId: frame.frameId }); report.metrics.released++ }
+  // Worker extension events arrive interleaved with frames; frames still hold
+  // slot leases, so drain them (releasing each) while waiting for the reply.
+  const nextExtensionEvent = async (name, timeoutMs = 15000) => {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const index = extensionEvents.findIndex(event => event.name === name)
+      if (index >= 0) return extensionEvents.splice(index, 1)[0]
+      const line = await nextLine(Math.max(20, deadline - Date.now()))
+      const message = JSON.parse(line)
+      if (message.type === 'extension') { extensionEvents.push(message); continue }
+      if (message.type === 'frame') { releaseFrame(message); continue }
+      if (message.type === 'stats') continue
+      if (message.type === 'surface') { report.metrics.surfaces++; continue }
+      throw new Error(`Unexpected protocol message while waiting for an extension event: ${line}`)
+    }
+  }
+  const waitSurface = async (timeoutMs) => {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const line = JSON.parse(await nextLine(Math.max(1000, deadline - Date.now())))
+      if (line.type === 'surface') { report.metrics.surfaces++; return line }
+      if (line.type === 'frame') releaseFrame(line)
+      if (line.type === 'extension') extensionEvents.push(line)
+      if (line.type === 'stats') continue
     }
   }
 
@@ -203,16 +239,18 @@ async function verify() {
     if (hello.protocol !== 2 || hello.transport !== 'd3d11-nt-rgba8') throw new Error(`Bad protocol/transport: ${JSON.stringify(hello)}`)
     if (JSON.stringify(hello.extensions) !== JSON.stringify(manifest.extensions)) throw new Error(`Extension mismatch: ${JSON.stringify(hello.extensions)}`)
     if (!Number.isInteger(hello.vendorId) || !Number.isInteger(hello.deviceId)) throw new Error('Missing GPU adapter IDs')
-    return { gpu: hello.gpu, vendorId: hello.vendorId, deviceId: hello.deviceId }
+    const features = hello.features
+    if (!Array.isArray(features) || !features.includes('interaction.map.v2') || !features.includes('input.text')
+      || !features.includes('input.ime') || !features.includes('pointer.lock')) throw new Error(`Missing v2 features: ${JSON.stringify(features)}`)
+    return { gpu: hello.gpu, vendorId: hello.vendorId, deviceId: hello.deviceId, features }
   })
 
   await step('surfaceAfterResize', async () => {
-    send({ kind: 'resize', width: size.width, height: size.height, scale: 1 })
-    const deadline = Date.now() + budget.surface
-    let surface
-    do { surface = JSON.parse(await nextLine(Math.max(1000, deadline - Date.now()))) } while (surface.type !== 'surface')
+    // Physical 320x240 (runtime) for a 640x480 css viewport: per-axis factors 0.5.
+    send({ kind: 'resize', width: size.width, height: size.height, scale: 0.5, cssWidth: size.width * 2, cssHeight: size.height * 2 })
+    const surface = await waitSurface(budget.surface)
     if (surface.width !== size.width || surface.height !== size.height || surface.slots !== 4) throw new Error(`Bad surface: ${JSON.stringify(surface)}`)
-    report.metrics.surfaces++
+    if (surface.cssWidth !== size.width * 2 || surface.cssHeight !== size.height * 2) throw new Error(`Surface missing css echo: ${JSON.stringify(surface)}`)
     report.firstEpoch = surface.epoch
   })
 
@@ -223,9 +261,9 @@ async function verify() {
         // The editor is demand-driven: it only redraws on interaction, so
         // drive damage with wheel zoom + hover over the viewport (also
         // exercises editor input delivery).
-        send({ kind: 'input', seq: ++seq, event: { type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: 480, y: 300, buttons: 0, button: -1, modifiers: 0 } })
-        send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: 480, y: 300, deltaX: 0, deltaY: (i % 2 === 0 ? 120 : -120), modifiers: 0 } })
-        send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: 480, y: 300, deltaX: 0, deltaY: (i % 2 === 0 ? -60 : 60), modifiers: 0 } })
+        send({ kind: 'input', seq: ++seq, event: { type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: aim.x, y: aim.y, buttons: 0, button: -1, modifiers: 0 } })
+        send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: aim.x, y: aim.y, deltaX: 0, deltaY: (i % 2 === 0 ? 120 : -120), modifiers: 0 } })
+        send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: aim.x, y: aim.y, deltaX: 0, deltaY: (i % 2 === 0 ? -60 : 60), modifiers: 0 } })
       }
       const frame = await expectFrame()
       frames.push(frame)
@@ -262,8 +300,8 @@ async function verify() {
     // Editor mode: clicks/wheels drive redraws; runtime mode: the demo scene
     // rotates continuously on its own.
     const nudge = i => {
-      input({ type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: 480, y: 300, buttons: 0, button: -1, modifiers: 0 })
-      input({ type: 'wheel', x: 480, y: 300, deltaX: 0, deltaY: i % 2 ? 90 : -90, modifiers: 0 })
+      input({ type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: aim.x, y: aim.y, buttons: 0, button: -1, modifiers: 0 })
+      input({ type: 'wheel', x: aim.x, y: aim.y, deltaX: 0, deltaY: i % 2 ? 90 : -90, modifiers: 0 })
     }
     input({ type: 'pointer', phase: 'down', pointerId: 1, pointerType: 'mouse', x: 100, y: 80, buttons: 1, button: 0, modifiers: 0 })
     input({ type: 'pointer', phase: 'move', pointerId: 1, pointerType: 'mouse', x: 140, y: 90, buttons: 1, button: -1, modifiers: 0 })
@@ -271,6 +309,15 @@ async function verify() {
     input({ type: 'wheel', x: 10, y: 10, deltaX: 0, deltaY: 120, modifiers: 0 })
     input({ type: 'key', code: 'KeyW', down: true, repeat: false, modifiers: 0 })
     input({ type: 'key', code: 'KeyW', down: false, repeat: false, modifiers: 0 })
+    // Text/IME pipeline (input.text / input.ime capabilities): the worker must
+    // accept and apply these without breaking the input sequence.
+    input({ type: 'drop', x: 160, y: 120, paths: ['/tmp/asset.glb'] })
+    input({ type: 'key', code: 'KeyF', down: true, repeat: false, modifiers: 0, key: 'f' })
+    input({ type: 'key', code: 'KeyF', down: false, repeat: false, modifiers: 0 })
+    input({ type: 'text', text: 'a' })
+    input({ type: 'ime', state: 'start', text: '' })
+    input({ type: 'ime', state: 'update', text: 'nǐ', cursorStart: 0, cursorEnd: 2 })
+    input({ type: 'ime', state: 'commit', text: '你' })
     input({ type: 'focus', focused: false })
     send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'rotate', payload: { value: false } })
     send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'reset', payload: null })
@@ -285,6 +332,129 @@ async function verify() {
     if (frame.inputSeq < seq) throw new Error(`Frame inputSeq ${frame.inputSeq} did not reach ${seq}`)
     report.metrics.maxInputSeq = Math.max(report.metrics.maxInputSeq, frame.inputSeq)
     report.metrics.frames++
+  })
+
+  await step('coordinateMapping', async () => {
+    // Runtime-only: the editor scene has no demo controller to observe. The
+    // demo controller answers `query` extension messages with its state, which
+    // turns coordinate mapping, button semantics and focus cleanup into
+    // black-box assertions.
+    if (editorMode) return { skipped: 'editor scene has no demo controller' }
+    const input = event => send({ kind: 'input', seq: ++seq, event })
+    const query = async () => {
+      send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'query', payload: null })
+      const event = await nextExtensionEvent('state')
+      if (event.namespace !== 'godot.demo.v1' || typeof event.payload !== 'object' || event.payload === null) throw new Error(`Bad state event: ${JSON.stringify(event)}`)
+      return event.payload
+    }
+    const near = (actual, expected) => Math.abs(actual - expected) <= 0.51
+    // Horizontal pan magnitude in world units (target y never changes).
+    const panned = (a, b) => Math.hypot(a[0] - b[0], a[2] - b[2])
+    const pointer = (phase, x, y, buttons, button, extra = {}) => input({ type: 'pointer', phase, pointerId: 1, pointerType: 'mouse', x, y, buttons, button, modifiers: 0, ...extra })
+
+    // Geometry: 320x240 physical serving a 640x480 css viewport -> factors 0.5.
+    send({ kind: 'resize', width: size.width, height: size.height, scale: 0.5, cssWidth: 640, cssHeight: 480 })
+    const mapped = await waitSurface(budget.surface)
+    if (mapped.cssWidth !== 640 || mapped.cssHeight !== 480) throw new Error(`Bad mapped surface: ${JSON.stringify(mapped)}`)
+    send({ kind: 'extension', seq: ++seq, namespace: 'godot.demo.v1', name: 'reset', payload: null })
+
+    // CSS (100,100) must land on engine (50,50) exactly (tolerance < 1px).
+    pointer('move', 100, 100, 0, -1)
+    let state = await query()
+    if (!near(state.lastPointer[0], 50) || !near(state.lastPointer[1], 50)) throw new Error(`CSS(100,100) did not map to engine (50,50): ${JSON.stringify(state)}`)
+    if (!near(state.mouse[0], 50) || !near(state.mouse[1], 50)) throw new Error(`Mouse position not mapped: ${JSON.stringify(state)}`)
+
+    // Right-drag pans: the pan target must move while yaw stays untouched.
+    pointer('down', 100, 100, 2, 2)
+    pointer('move', 200, 100, 2, -1)
+    state = await query()
+    if (!state.dragging || state.buttons !== 2) throw new Error(`Right-drag not detected: ${JSON.stringify(state)}`)
+    if (!near(state.lastPointer[0], 100) || !near(state.lastPointer[1], 50)) throw new Error(`Right-drag position not mapped: ${JSON.stringify(state)}`)
+    // 50 engine px * distance 4 * 0.0016 ~= 0.32 world units expected.
+    if (!panned(state.target, [0, 0, 0])) throw new Error(`Right-drag did not pan the target: ${JSON.stringify(state)}`)
+    const panTarget = [...state.target]
+    pointer('up', 200, 100, 0, 2)
+    state = await query()
+    if (state.dragging || state.buttons !== 0) throw new Error(`Button mask outlived the right-drag release: ${JSON.stringify(state)}`)
+
+    // Shift+left-drag pans too.
+    pointer('down', 100, 100, 1, 0, { modifiers: 1 })
+    pointer('move', 160, 100, 1, -1, { modifiers: 1 })
+    state = await query()
+    if (!panned(state.target, panTarget)) throw new Error(`Shift+left-drag did not pan: ${JSON.stringify(state)}`)
+    pointer('up', 160, 100, 0, 0)
+
+    // Left-drag orbits; a pointer-lock style movementX/Y delta overrides the
+    // (frozen) OS position: 200 css px -> 100 engine px -> 0.6 rad at 0.006.
+    pointer('down', 100, 100, 1, 0)
+    pointer('move', 300, 100, 1, -1, { movementX: 200, movementY: 0 })
+    state = await query()
+    if (!near(state.yaw, 0.35 - 0.6)) throw new Error(`movementX orbit mismatch: yaw ${state.yaw}, expected ${0.35 - 0.6}`)
+    if (!near(state.lastPointer[0], 150) || !near(state.lastPointer[1], 50)) throw new Error(`movementX position mismatch: ${JSON.stringify(state)}`)
+    pointer('up', 300, 100, 0, 0)
+
+    // The wheel uses its own event coordinates (mapped) and dollies the camera.
+    input({ type: 'wheel', x: 10, y: 10, deltaX: 0, deltaY: 120, modifiers: 0 })
+    state = await query()
+    if (!near(state.mouse[0], 5) || !near(state.mouse[1], 5)) throw new Error(`Wheel coordinates not mapped: ${JSON.stringify(state)}`)
+    if (!near(state.distance, 4.0 + 0.35 * 1.2)) throw new Error(`Wheel dolly mismatch: ${JSON.stringify(state)}`)
+
+    // Focus loss releases pressed buttons: no stale drag may survive an unfocus.
+    pointer('down', 100, 100, 1, 0)
+    state = await query()
+    if (!state.dragging) throw new Error(`Left-drag not detected before focus loss: ${JSON.stringify(state)}`)
+    input({ type: 'focus', focused: false })
+    state = await query()
+    if (state.dragging || state.buttons !== 0) throw new Error(`Focus loss did not clear the drag: ${JSON.stringify(state)}`)
+
+    // A cancel phase never carries a button value (regression: early return on
+    // button == NONE left the drag stuck before).
+    pointer('down', 100, 100, 2, 2)
+    state = await query()
+    if (!state.dragging) throw new Error(`Right-drag not detected before cancel: ${JSON.stringify(state)}`)
+    pointer('cancel', 100, 100, 0, -1)
+    state = await query()
+    if (state.dragging || state.buttons !== 0) throw new Error(`Cancel did not release the drag: ${JSON.stringify(state)}`)
+    const baselineTarget = [...state.target]
+
+    // godot.viewport.v1 setRightDrag switches the right button off; the camera
+    // must not pan while it is disabled.
+    send({ kind: 'extension', seq: ++seq, namespace: 'godot.viewport.v1', name: 'setRightDrag', payload: { value: 'none' } })
+    pointer('down', 100, 100, 2, 2)
+    pointer('move', 220, 100, 2, -1)
+    state = await query()
+    if (panned(state.target, baselineTarget)) throw new Error(`setRightDrag 'none' still panned: ${JSON.stringify(state)}`)
+    pointer('up', 220, 100, 0, 2)
+    send({ kind: 'extension', seq: ++seq, namespace: 'godot.viewport.v1', name: 'setRightDrag', payload: { value: 'pan' } })
+
+    // Printable keys arrive as unicode (text fields insert from it); keys
+    // without a character stay unicode-free so shortcuts can't double-act.
+    input({ type: 'key', code: 'KeyN', down: true, repeat: false, modifiers: 0, key: 'n' })
+    input({ type: 'key', code: 'KeyN', down: false, repeat: false, modifiers: 0 })
+    state = await query()
+    if (state.lastUnicode !== 110) throw new Error(`Key character not delivered as unicode: ${JSON.stringify(state)}`)
+    input({ type: 'key', code: 'KeyW', down: true, repeat: false, modifiers: 0 })
+    input({ type: 'key', code: 'KeyW', down: false, repeat: false, modifiers: 0 })
+    state = await query()
+    if (state.lastUnicode !== 0) throw new Error(`Key without a character must stay unicode-free: ${JSON.stringify(state)}`)
+
+    // OS file drops reach the engine's files-dropped notification with the
+    // full path list (the create-node/import path in the editor).
+    input({ type: 'drop', x: 50, y: 40, paths: ['/tmp/a.glb', '/tmp/b.png'] })
+    state = await query()
+    if (JSON.stringify(state.lastDropPaths) !== JSON.stringify(['/tmp/a.glb', '/tmp/b.png'])) {
+      throw new Error(`Drop paths mismatch: ${JSON.stringify(state.lastDropPaths)}`)
+    }
+
+    // Legacy fallback (graphics101): a resize without css fields keeps the
+    // single-scale behavior and the surface carries no css echo.
+    send({ kind: 'resize', width: 200, height: 150, scale: 1 })
+    const legacy = await waitSurface(budget.surface)
+    if (legacy.cssWidth !== undefined || legacy.cssHeight !== undefined) throw new Error(`Legacy surface must not echo css: ${JSON.stringify(legacy)}`)
+    pointer('move', 100, 100, 0, -1)
+    state = await query()
+    if (!near(state.lastPointer[0], 100) || !near(state.lastPointer[1], 100)) throw new Error(`Legacy mapping mismatch: ${JSON.stringify(state)}`)
+    return { mappedSurface: mapped.epoch, legacySurface: legacy.epoch }
   })
 
   await step('suspendAndResume', async () => {
@@ -305,7 +475,7 @@ async function verify() {
     if (observed > 12) throw new Error(`Frames kept flowing at full rate while hidden (${observed} in 700ms)`)
     send({ kind: 'visible', value: true })
     if (editorMode) {
-      send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: 480, y: 300, deltaX: 0, deltaY: 120, modifiers: 0 } })
+      send({ kind: 'input', seq: ++seq, event: { type: 'wheel', x: aim.x, y: aim.y, deltaX: 0, deltaY: 120, modifiers: 0 } })
     }
     const frame = await expectFrame(15000)
     send({ kind: 'release', epoch: frame.epoch, slot: frame.slot, frameId: frame.frameId })

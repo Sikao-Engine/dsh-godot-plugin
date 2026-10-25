@@ -12,4 +12,5 @@ config_version=5
 
 config/name="DSH Godot Editor"
 config/description="Project bundled with dsh-godot-plugin so the editor worker has something to edit."
+run/main_scene="uid://b2uem5btxyoni"
 config/features=PackedStringArray("4.8", "Forward Plus")

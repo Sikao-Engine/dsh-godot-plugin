@@ -13,7 +13,8 @@
 | GPU 输出 | Vulkan 与 D3D11 共享纹理，NT 句柄复制到 broker | godot/platform/windows/dsh_shared_frames_win32.cpp |
 | Desktop 导入 | Electron sharedTexture → VideoFrame → 客户端 WebGPU | 上游 Desktop broker 与 preload |
 | 通用交互 | 指针、滚轮、DOM code 键盘、焦点、resize 与 visibility | 上游协议 2；godot/platform/windows/dsh_viewport_worker.cpp 输入映射 |
-| 引擎操作 | graphics101.camera.v1 已退役；godot.demo.v1 提供 reset 与 rotate | 下游 demo 控制器 |
+| 引擎操作 | graphics101.camera.v1 已退役；godot.demo.v1 提供 reset、rotate 与 query（状态测试钩子）；godot.viewport.v1 提供 setRelativeMouseMode/setRightDrag | 下游 demo 控制器 |
+| 交互协议 v2 | 已实现：hello features 能力协商、resize 逐轴 cssWidth/cssHeight + surface 回执、指针 movementX/Y、文本/IME 输入、指针锁定；旧 producer 全链路回退 | 见 doc/design/interaction-protocol-v2.zh.md |
 | Godot runtime | 已接入（worker 模式，协议 2 全链路 `pnpm run godot:verify` 通过） | godot/ 输出层重构，见 godot-worker-output.zh.md |
 
 现状由源码和本次实际执行的检查确定；已有旧报告中的 GPU 验证不能自动成为新协议的验证证据。完整 Desktop 组合、重启、GPU 丢失和插件热卸载仍需独立验收。
@@ -30,7 +31,7 @@
 
 ## 上层交互 API
 
-`control(generation, { kind: 'input', seq, event })` 发送 pointer、wheel、key 或 focus。指针位置为视口局部 CSS 像素，左上原点；resize 为物理像素并携带 scale。滚轮转换为 CSS 像素，键盘使用 DOM code，修饰位为 Shift=1、Control=2、Alt=4、Meta=8。失焦、隐藏和取消捕获清除拖动或按住状态。
+`control(generation, { kind: 'input', seq, event })` 发送 pointer、wheel、key、text、ime 或 focus。指针位置为视口局部 CSS 像素，左上原点；resize 为物理像素并携带 scale；协商 `interaction.map.v2` 后 resize 附带 cssWidth/cssHeight（成对、≤16384）实现逐轴精确映射，surface 回执回显已应用 css 几何；text/ime 事件按 hello features 能力放行（上限 1024 字符）。滚轮转换为 CSS 像素，键盘使用 DOM code，修饰位为 Shift=1、Control=2、Alt=4、Meta=8。失焦、隐藏和取消捕获清除拖动或按住状态。
 
 `control(generation, { kind: 'extension', seq, namespace, name, payload })` 发送有界 JSON。命名空间必须由 producer 注册并携带版本。Graphics101 只声明 `graphics101.camera.v1`：reset 的 payload 为 null，rotate 的 payload 为 `{ value: boolean }`。Worker 可反向输出 extension 事件。序号只保证交互准入与应用顺序，不代表请求结果、GPU 完成或持久化。
 
